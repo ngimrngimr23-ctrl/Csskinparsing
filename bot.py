@@ -3,23 +3,24 @@ import logging
 import urllib.parse
 import os
 import random
+import threading
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandObject
 import aiohttp
 from aiohttp import web
 
 # ==========================================
-# 1. ПЕРЕМЕННЫЕ И НАСТРОЙКИ (Берутся из Render)
+# 1. ПЕРЕМЕННЫЕ И НАСТРОЙКИ
 # ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-# Глобальные настройки
+# Глобальные настройки (общие для всех потоков)
 proxy_list = []
 parser_running = False
-target_items = {}         # {"Скин": базовая_цена}
-base_drop_percent = 20.0  # Ловить лоты дешевле базы на 20%
-max_week_trend_drop = -10.0 # ФИЛЬТР: Отсеивать лот, если за неделю цена упала больше чем на 10%
+target_items = {}         
+base_drop_percent = 20.0  
+max_week_trend_drop = -10.0 
 
 sticker_settings = {
     1: 5.0, 2: 15.0, 3: 35.0, 4: 80.0
@@ -61,16 +62,16 @@ async def cmd_add_proxy(message: types.Message, command: CommandObject):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer(f"❌ У вас нет доступа к этому боту. Ваш ID: {message.from_user.id}")
+        await message.answer(f"❌ Нет доступа. Ваш ID: {message.from_user.id}")
         return
         
     await message.answer(
-        "🎯 <b>Снайпер-бот запущен и готов к работе!</b>\n\n"
+        "🎯 <b>Снайпер-бот запущен (Многопоточный режим)!</b>\n\n"
         "Доступные команды:\n"
         "🔸 /add_proxy http://user:pass@ip:port - Добавить прокси\n"
         "🔸 /set_markup <кол-во> <процент> - Наценка за стрик наклеек\n"
         "🔸 /set_drop <процент> - % падения базовой цены для алерта\n"
-        "🔸 /set_trend <процент> - Максимальная просадка тренда за неделю (напр. -10)\n"
+        "🔸 /set_trend <процент> - Макс. просадка тренда (напр. -10)\n"
         "🔸 /set_item <имя> <цена> - Добавить скин и его базу\n"
         "🔸 /start_parser - Запустить мониторинг Steam\n"
         "🔸 /stop_parser - Остановить мониторинг",
@@ -104,7 +105,7 @@ async def cmd_set_trend(message: types.Message, command: CommandObject):
     global max_week_trend_drop
     try:
         max_week_trend_drop = float(command.args)
-        await message.answer(f"✅ Фильтр тренда установлен. Отсеиваем скины, которые упали за неделю сильнее чем на {max_week_trend_drop}%")
+        await message.answer(f"✅ Фильтр тренда: {max_week_trend_drop}%")
     except: pass
 
 @dp.message(Command("set_item"))
@@ -117,11 +118,28 @@ async def cmd_set_item(message: types.Message, command: CommandObject):
         await message.answer(f"✅ Добавлен: {item_name} | База: {price} руб.")
     except: pass
 
+@dp.message(Command("start_parser"))
+async def cmd_start_parser(message: types.Message):
+    global parser_running
+    if message.from_user.id != ADMIN_ID: return
+    if not target_items:
+        await message.answer("❌ Список предметов пуст. Добавь через /set_item")
+        return
+        
+    parser_running = True
+    await message.answer("🚀 Мониторинг запущен в фоновом потоке!")
+
+@dp.message(Command("stop_parser"))
+async def cmd_stop_parser(message: types.Message):
+    global parser_running
+    if message.from_user.id != ADMIN_ID: return
+    parser_running = False
+    await message.answer("🛑 Мониторинг остановлен.")
+
 # ==========================================
-# 4. ЛОГИКА ПАРСИНГА И ФИЛЬТРАЦИИ
+# 4. ЛОГИКА ПАРСИНГА (РАБОТАЕТ В ДРУГОМ ПОТОКЕ)
 # ==========================================
 async def check_week_trend(session, item_name):
-    """Проверка тренда через CSGOBackpack"""
     url = f"https://csgobackpack.net/api/GetItemPrice/?currency=RUB&id={urllib.parse.quote(item_name)}&time=7"
     try:
         async with session.get(url, timeout=5) as resp:
@@ -132,13 +150,11 @@ async def check_week_trend(session, item_name):
                 if history:
                     oldest_price = float(history[0]["average"]) 
                     if oldest_price > 0:
-                        trend = ((avg_24h - oldest_price) / oldest_price) * 100
-                        return trend
-    except Exception: pass
+                        return ((avg_24h - oldest_price) / oldest_price) * 100
+    except: pass
     return 0.0
 
 async def check_stickers(session, inspect_link):
-    """Проверка наклеек через CSFloat"""
     url = f"https://api.csfloat.com/v1/me/inspect?url={urllib.parse.quote(inspect_link)}"
     try:
         async with session.get(url, timeout=5) as resp:
@@ -148,34 +164,18 @@ async def check_stickers(session, inspect_link):
     except: pass
     return []
 
-# ==========================================
-# 5. ГЛАВНЫЙ ЦИКЛ СНАЙПИНГА
-# ==========================================
-@dp.message(Command("start_parser"))
-async def cmd_start_parser(message: types.Message):
-    global parser_running
-    if message.from_user.id != ADMIN_ID: return
-    if not target_items:
-        await message.answer("❌ Список предметов пуст. Добавь через /set_item")
-        return
-        
-    parser_running = True
-    await message.answer("🚀 Мониторинг запущен! Работаем в фоне.")
-    asyncio.create_task(parser_loop())
-
-@dp.message(Command("stop_parser"))
-async def cmd_stop_parser(message: types.Message):
-    global parser_running
-    if message.from_user.id != ADMIN_ID: return
-    parser_running = False
-    await message.answer("🛑 Мониторинг остановлен.")
-
-async def parser_loop():
-    global parser_running
+async def parser_loop_async():
+    """Асинхронный цикл парсера"""
+    # Создаем отдельного бота для этого потока, чтобы не ломать основной
+    thread_bot = Bot(token=BOT_TOKEN)
     headers = {"User-Agent": "Mozilla/5.0"}
     
     async with aiohttp.ClientSession() as session:
-        while parser_running:
+        while True: # Поток живет всегда
+            if not parser_running or not target_items:
+                await asyncio.sleep(2)
+                continue
+                
             for item_name, base_price in target_items.items():
                 if not parser_running: break
                 
@@ -194,10 +194,9 @@ async def parser_loop():
                                 
                                 # ПРОВЕРКА 1: Просадка базы
                                 if final_price <= target_drop_price:
-                                    # ПРОВЕРКА 2: Фильтр недельного тренда
                                     trend = await check_week_trend(session, item_name)
                                     if trend >= max_week_trend_drop:
-                                        await bot.send_message(
+                                        await thread_bot.send_message(
                                             ADMIN_ID,
                                             f"🔥 <b>СКИН УПАЛ (Тренд в норме: {trend:.1f}%)</b>\n"
                                             f"Предмет: {item_name}\n"
@@ -206,7 +205,7 @@ async def parser_loop():
                                             parse_mode="HTML"
                                         )
 
-                                # ПРОВЕРКА 3: Наклейки
+                                # ПРОВЕРКА 2: Наклейки
                                 asset = listing_data.get("asset", {})
                                 action_link = asset.get("market_actions", [{}])[0].get("link", "")
                                 if action_link:
@@ -220,7 +219,7 @@ async def parser_loop():
                                             if count in sticker_settings:
                                                 markup = sticker_settings[count]
                                                 if final_price <= (base_price * (1 + (markup / 100))):
-                                                    await bot.send_message(
+                                                    await thread_bot.send_message(
                                                         ADMIN_ID,
                                                         f"💎 <b>НАЙДЕН СТРИК НАКЛЕЕК!</b>\n"
                                                         f"Предмет: {item_name}\n"
@@ -230,34 +229,38 @@ async def parser_loop():
                                                         parse_mode="HTML"
                                                     )
                 except Exception as e:
-                    logging.error(f"Ошибка парсинга {item_name}: {e}")
+                    logging.error(f"Ошибка парсера: {e}")
                 
-                await asyncio.sleep(2)
+                await asyncio.sleep(2) # Задержка между предметами
+
+def start_parser_thread():
+    """Изолированный запуск парсера в новом потоке"""
+    logging.info("Запуск независимого потока парсера...")
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(parser_loop_async())
 
 # ==========================================
-# 6. ВЕБ-СЕРВЕР ДЛЯ РЕНДЕРА И UPTIMEROBOT
+# 5. ВЕБ-СЕРВЕР И СТАРТ
 # ==========================================
 async def handle_ping(request):
-    """Ответ 200 OK для UptimeRobot, чтобы сервер не уснул"""
     return web.Response(text="Bot is running! UptimeRobot OK.", status=200)
 
 async def start_bot_in_background(app):
-    """Запускаем бота в фоне вместе с сервером"""
     logging.info("Очистка старых вебхуков и запуск polling...")
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(dp.start_polling(bot))
 
 if __name__ == "__main__":
+    # 1. Запускаем выделенный поток для парсера СРАЗУ
+    t = threading.Thread(target=start_parser_thread, daemon=True)
+    t.start()
+
+    # 2. Поднимаем веб-сервер и Телеграм-бота в основном потоке
     app = web.Application()
     app.router.add_get('/', handle_ping)
-    
-    # Привязываем старт Телеграм-бота к старту веб-сервера
     app.on_startup.append(start_bot_in_background)
     
-    # Порт для Render
     port = int(os.environ.get("PORT", 10000))
-    logging.info(f"Starting web server on port {port}")
-    
-    # Запускаем приложение
     web.run_app(app, host='0.0.0.0', port=port)
     
