@@ -19,7 +19,7 @@ proxy_list = []
 parser_running = False
 target_items = {}         # {"Скин": базовая_цена}
 base_drop_percent = 20.0  # Ловить лоты дешевле базы на 20%
-max_week_trend_drop = -10.0 # ФИЛЬТР: Отсеивать лот, если за неделю средняя цена скина упала больше чем на 10%
+max_week_trend_drop = -10.0 # ФИЛЬТР: Отсеивать лот, если за неделю цена упала больше чем на 10%
 
 sticker_settings = {
     1: 5.0, 2: 15.0, 3: 35.0, 4: 80.0
@@ -56,8 +56,27 @@ async def cmd_add_proxy(message: types.Message, command: CommandObject):
         await msg.edit_text(f"❌ Прокси мертв или не отвечает. Ошибка: {str(e)}")
 
 # ==========================================
-# 3. КОМАНДЫ НАСТРОЙКИ
+# 3. КОМАНДЫ НАСТРОЙКИ И МЕНЮ
 # ==========================================
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer(f"❌ У вас нет доступа к этому боту. Ваш ID: {message.from_user.id}")
+        return
+        
+    await message.answer(
+        "🎯 <b>Снайпер-бот запущен и готов к работе!</b>\n\n"
+        "Доступные команды:\n"
+        "🔸 /add_proxy http://user:pass@ip:port - Добавить прокси\n"
+        "🔸 /set_markup <кол-во> <процент> - Наценка за стрик наклеек\n"
+        "🔸 /set_drop <процент> - % падения базовой цены для алерта\n"
+        "🔸 /set_trend <процент> - Максимальная просадка тренда за неделю (напр. -10)\n"
+        "🔸 /set_item <имя> <цена> - Добавить скин и его базу\n"
+        "🔸 /start_parser - Запустить мониторинг Steam\n"
+        "🔸 /stop_parser - Остановить мониторинг",
+        parse_mode="HTML"
+    )
+
 @dp.message(Command("set_markup"))
 async def cmd_set_markup(message: types.Message, command: CommandObject):
     if message.from_user.id != ADMIN_ID: return
@@ -102,6 +121,7 @@ async def cmd_set_item(message: types.Message, command: CommandObject):
 # 4. ЛОГИКА ПАРСИНГА И ФИЛЬТРАЦИИ
 # ==========================================
 async def check_week_trend(session, item_name):
+    """Проверка тренда через CSGOBackpack"""
     url = f"https://csgobackpack.net/api/GetItemPrice/?currency=RUB&id={urllib.parse.quote(item_name)}&time=7"
     try:
         async with session.get(url, timeout=5) as resp:
@@ -118,6 +138,7 @@ async def check_week_trend(session, item_name):
     return 0.0
 
 async def check_stickers(session, inspect_link):
+    """Проверка наклеек через CSFloat"""
     url = f"https://api.csfloat.com/v1/me/inspect?url={urllib.parse.quote(inspect_link)}"
     try:
         async with session.get(url, timeout=5) as resp:
@@ -134,6 +155,10 @@ async def check_stickers(session, inspect_link):
 async def cmd_start_parser(message: types.Message):
     global parser_running
     if message.from_user.id != ADMIN_ID: return
+    if not target_items:
+        await message.answer("❌ Список предметов пуст. Добавь через /set_item")
+        return
+        
     parser_running = True
     await message.answer("🚀 Мониторинг запущен! Работаем в фоне.")
     asyncio.create_task(parser_loop())
@@ -210,28 +235,29 @@ async def parser_loop():
                 await asyncio.sleep(2)
 
 # ==========================================
-# 6. ВЕБ-СЕРВЕР ДЛЯ РЕНДЕРА И ЗАПУСК БОТА
+# 6. ВЕБ-СЕРВЕР ДЛЯ РЕНДЕРА И UPTIMEROBOT
 # ==========================================
 async def handle_ping(request):
-    """Фейковый ответ для проверок Render"""
-    return web.Response(text="Bot is running!")
+    """Ответ 200 OK для UptimeRobot, чтобы сервер не уснул"""
+    return web.Response(text="Bot is running! UptimeRobot OK.", status=200)
 
-async def main():
-    # Запуск фейкового веб-сервера
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    # Render передает свой порт, иначе используем 10000
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    logging.info(f"Web server started on port {port} to satisfy Render")
-
-    # Запуск Telegram-бота
-    await dp.start_polling(bot)
+async def start_bot_in_background(app):
+    """Запускаем бота в фоне вместе с сервером"""
+    logging.info("Очистка старых вебхуков и запуск polling...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    asyncio.create_task(dp.start_polling(bot))
 
 if __name__ == "__main__":
-    asyncio.run(main())
-                
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    
+    # Привязываем старт Телеграм-бота к старту веб-сервера
+    app.on_startup.append(start_bot_in_background)
+    
+    # Порт для Render
+    port = int(os.environ.get("PORT", 10000))
+    logging.info(f"Starting web server on port {port}")
+    
+    # Запускаем приложение
+    web.run_app(app, host='0.0.0.0', port=port)
+    
