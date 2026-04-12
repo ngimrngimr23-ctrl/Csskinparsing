@@ -15,10 +15,10 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-# Глобальные настройки (общие для всех потоков)
 proxy_list = []
 parser_running = False
-target_items = {}         
+target_items = {}         # Топ-1000 ликвидных скинов
+blacklist = set()         # Черный список скинов
 base_drop_percent = 20.0  
 max_week_trend_drop = -10.0 
 
@@ -42,7 +42,6 @@ async def cmd_add_proxy(message: types.Message, command: CommandObject):
         return
 
     msg = await message.answer("⏳ Проверяю прокси на Стиме...")
-    
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get("https://steamcommunity.com/market/", proxy=proxy_url, timeout=7) as resp:
@@ -57,7 +56,7 @@ async def cmd_add_proxy(message: types.Message, command: CommandObject):
         await msg.edit_text(f"❌ Прокси мертв или не отвечает. Ошибка: {str(e)}")
 
 # ==========================================
-# 3. КОМАНДЫ НАСТРОЙКИ И МЕНЮ
+# 3. КОМАНДЫ НАСТРОЙКИ, БЛЕКЛИСТА И МЕНЮ
 # ==========================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -66,17 +65,38 @@ async def cmd_start(message: types.Message):
         return
         
     await message.answer(
-        "🎯 <b>Снайпер-бот запущен (Многопоточный режим)!</b>\n\n"
+        "🎯 <b>Снайпер-бот запущен (Топ-1000 ликвидных скинов)!</b>\n\n"
         "Доступные команды:\n"
-        "🔸 /add_proxy http://user:pass@ip:port - Добавить прокси\n"
-        "🔸 /set_markup <кол-во> <процент> - Наценка за стрик наклеек\n"
-        "🔸 /set_drop <процент> - % падения базовой цены для алерта\n"
-        "🔸 /set_trend <процент> - Макс. просадка тренда (напр. -10)\n"
-        "🔸 /set_item <имя> <цена> - Добавить скин и его базу\n"
-        "🔸 /start_parser - Запустить мониторинг Steam\n"
+        "🔸 /add_proxy http://... - Добавить прокси\n"
+        "🔸 /set_markup [кол-во] [процент] - Наценка за стрик наклеек\n"
+        "🔸 /set_drop [процент] - % падения базовой цены\n"
+        "🔸 /set_trend [процент] - Макс. просадка тренда (напр. -10)\n"
+        "🔸 /bl_add [имя] - Добавить скин в черный список\n"
+        "🔸 /bl_del [имя] - Удалить из черного списка\n"
+        "🔸 /start_parser - Скачать топ-1000 и начать мониторинг\n"
         "🔸 /stop_parser - Остановить мониторинг",
         parse_mode="HTML"
     )
+
+@dp.message(Command("bl_add"))
+async def cmd_bl_add(message: types.Message, command: CommandObject):
+    if message.from_user.id != ADMIN_ID: return
+    item_name = command.args
+    if item_name:
+        blacklist.add(item_name)
+        await message.answer(f"✅ Добавлено в черный список:\n{item_name}")
+    else:
+        await message.answer("⚠️ Формат: /bl_add AK-47 | Safari Mesh (Battle-Scarred)")
+
+@dp.message(Command("bl_del"))
+async def cmd_bl_del(message: types.Message, command: CommandObject):
+    if message.from_user.id != ADMIN_ID: return
+    item_name = command.args
+    if item_name in blacklist:
+        blacklist.remove(item_name)
+        await message.answer(f"✅ Удалено из черного списка:\n{item_name}")
+    else:
+        await message.answer("⚠️ Скин не найден в черном списке.")
 
 @dp.message(Command("set_markup"))
 async def cmd_set_markup(message: types.Message, command: CommandObject):
@@ -87,7 +107,7 @@ async def cmd_set_markup(message: types.Message, command: CommandObject):
         if count in [1, 2, 3, 4]:
             sticker_settings[count] = percent
             await message.answer(f"✅ Наценка за {count} наклеек = {percent}%")
-    except Exception:
+    except:
         await message.answer("⚠️ Формат: /set_markup 4 80")
 
 @dp.message(Command("set_drop"))
@@ -108,26 +128,65 @@ async def cmd_set_trend(message: types.Message, command: CommandObject):
         await message.answer(f"✅ Фильтр тренда: {max_week_trend_drop}%")
     except: pass
 
-@dp.message(Command("set_item"))
-async def cmd_set_item(message: types.Message, command: CommandObject):
-    if message.from_user.id != ADMIN_ID: return
+# ==========================================
+# 4. АВТО-ЗАГРУЗКА ТОП-1000 ЛИКВИДНОСТИ
+# ==========================================
+async def load_top_1000_liquid_items():
+    """Скачивает рынок, сортирует по количеству продаж и отдает Топ-1000"""
+    url = "https://csgobackpack.net/api/GetItemsList/v2/"
+    temp_items = []
+    
     try:
-        args = command.args.rsplit(' ', 1)
-        item_name, price = args[0].strip(), float(args[1])
-        target_items[item_name] = price
-        await message.answer(f"✅ Добавлен: {item_name} | База: {price} руб.")
-    except: pass
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=20) as resp:
+                data = await resp.json()
+                if data.get("success"):
+                    items_list = data.get("items_list", {})
+                    for name, info in items_list.items():
+                        prices = info.get("price", {})
+                        if prices:
+                            data_24h = prices.get("24_hours", {})
+                            price_24h = data_24h.get("median", 0)
+                            
+                            # Получаем объем продаж (ликвидность)
+                            volume_str = data_24h.get("sold", "0")
+                            try:
+                                volume = int(str(volume_str).replace(',', ''))
+                            except:
+                                volume = 0
+                                
+                            if price_24h > 0 and volume > 0:
+                                temp_items.append({
+                                    'name': name,
+                                    'price': float(price_24h) * 90.0, # Перевод в рубли
+                                    'volume': volume
+                                })
+    except Exception as e:
+        logging.error(f"Ошибка загрузки базы рынка: {e}")
+        return {}
+
+    # Сортируем по объему (от самых продаваемых к менее)
+    temp_items.sort(key=lambda x: x['volume'], reverse=True)
+    
+    # Берем топ 1000
+    top_1000 = temp_items[:1000]
+    
+    # Переводим обратно в нужный формат словаря {"Название": цена}
+    loaded_items = {item['name']: item['price'] for item in top_1000}
+    return loaded_items
 
 @dp.message(Command("start_parser"))
 async def cmd_start_parser(message: types.Message):
-    global parser_running
+    global parser_running, target_items
     if message.from_user.id != ADMIN_ID: return
+    
     if not target_items:
-        await message.answer("❌ Список предметов пуст. Добавь через /set_item")
-        return
+        await message.answer("⏳ Собираю аналитику рынка и отбираю Топ-1000 самых ликвидных скинов...")
+        target_items = await load_top_1000_liquid_items()
+        await message.answer(f"✅ База готова! Загружено предметов: {len(target_items)}")
         
     parser_running = True
-    await message.answer("🚀 Мониторинг запущен в фоновом потоке!")
+    await message.answer("🚀 Снайпинг ликвидности запущен!")
 
 @dp.message(Command("stop_parser"))
 async def cmd_stop_parser(message: types.Message):
@@ -137,7 +196,7 @@ async def cmd_stop_parser(message: types.Message):
     await message.answer("🛑 Мониторинг остановлен.")
 
 # ==========================================
-# 4. ЛОГИКА ПАРСИНГА (РАБОТАЕТ В ДРУГОМ ПОТОКЕ)
+# 5. ЛОГИКА ПАРСИНГА В ФОНЕ
 # ==========================================
 async def check_week_trend(session, item_name):
     url = f"https://csgobackpack.net/api/GetItemPrice/?currency=RUB&id={urllib.parse.quote(item_name)}&time=7"
@@ -165,19 +224,20 @@ async def check_stickers(session, inspect_link):
     return []
 
 async def parser_loop_async():
-    """Асинхронный цикл парсера"""
-    # Создаем отдельного бота для этого потока, чтобы не ломать основной
     thread_bot = Bot(token=BOT_TOKEN)
     headers = {"User-Agent": "Mozilla/5.0"}
     
     async with aiohttp.ClientSession() as session:
-        while True: # Поток живет всегда
+        while True:
             if not parser_running or not target_items:
                 await asyncio.sleep(2)
                 continue
                 
             for item_name, base_price in target_items.items():
                 if not parser_running: break
+                
+                if item_name in blacklist:
+                    continue
                 
                 current_proxy = random.choice(proxy_list) if proxy_list else None
                 url = f"https://steamcommunity.com/market/listings/730/{urllib.parse.quote(item_name)}/render/?query=&start=0&count=10&country=RU&language=russian&currency=5"
@@ -198,9 +258,9 @@ async def parser_loop_async():
                                     if trend >= max_week_trend_drop:
                                         await thread_bot.send_message(
                                             ADMIN_ID,
-                                            f"🔥 <b>СКИН УПАЛ (Тренд в норме: {trend:.1f}%)</b>\n"
+                                            f"🔥 <b>СКИН УПАЛ (Тренд: {trend:.1f}%)</b>\n"
                                             f"Предмет: {item_name}\n"
-                                            f"Цена: {final_price} руб. (База: {base_price})\n"
+                                            f"Цена: {final_price} руб. (База: {base_price:.2f})\n"
                                             f"<a href='https://steamcommunity.com/market/listings/730/{urllib.parse.quote(item_name)}'>Купить</a>",
                                             parse_mode="HTML"
                                         )
@@ -229,34 +289,29 @@ async def parser_loop_async():
                                                         parse_mode="HTML"
                                                     )
                 except Exception as e:
-                    logging.error(f"Ошибка парсера: {e}")
+                    pass 
                 
-                await asyncio.sleep(2) # Задержка между предметами
+                await asyncio.sleep(2)
 
 def start_parser_thread():
-    """Изолированный запуск парсера в новом потоке"""
-    logging.info("Запуск независимого потока парсера...")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(parser_loop_async())
 
 # ==========================================
-# 5. ВЕБ-СЕРВЕР И СТАРТ
+# 6. ВЕБ-СЕРВЕР И СТАРТ
 # ==========================================
 async def handle_ping(request):
     return web.Response(text="Bot is running! UptimeRobot OK.", status=200)
 
 async def start_bot_in_background(app):
-    logging.info("Очистка старых вебхуков и запуск polling...")
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(dp.start_polling(bot))
 
 if __name__ == "__main__":
-    # 1. Запускаем выделенный поток для парсера СРАЗУ
     t = threading.Thread(target=start_parser_thread, daemon=True)
     t.start()
 
-    # 2. Поднимаем веб-сервер и Телеграм-бота в основном потоке
     app = web.Application()
     app.router.add_get('/', handle_ping)
     app.on_startup.append(start_bot_in_background)
