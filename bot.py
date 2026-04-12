@@ -6,6 +6,7 @@ import random
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandObject
 import aiohttp
+from aiohttp import web
 
 # ==========================================
 # 1. ПЕРЕМЕННЫЕ И НАСТРОЙКИ (Берутся из Render)
@@ -41,7 +42,6 @@ async def cmd_add_proxy(message: types.Message, command: CommandObject):
 
     msg = await message.answer("⏳ Проверяю прокси на Стиме...")
     
-    # Тестируем прокси
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get("https://steamcommunity.com/market/", proxy=proxy_url, timeout=7) as resp:
@@ -102,22 +102,20 @@ async def cmd_set_item(message: types.Message, command: CommandObject):
 # 4. ЛОГИКА ПАРСИНГА И ФИЛЬТРАЦИИ
 # ==========================================
 async def check_week_trend(session, item_name):
-    """Проверяет динамику скина за неделю через CSGOBackpack"""
     url = f"https://csgobackpack.net/api/GetItemPrice/?currency=RUB&id={urllib.parse.quote(item_name)}&time=7"
     try:
         async with session.get(url, timeout=5) as resp:
             data = await resp.json()
             if data.get("success"):
                 avg_24h = float(data.get("average_price", 0))
-                # Тут берем медиану за 7 дней из истории, упрощенно - берем самую старую доступную в ответе
                 history = data.get("price_history", [])
                 if history:
-                    oldest_price = float(history[0]["average"]) # Цена 7 дней назад
+                    oldest_price = float(history[0]["average"]) 
                     if oldest_price > 0:
                         trend = ((avg_24h - oldest_price) / oldest_price) * 100
                         return trend
     except Exception: pass
-    return 0.0 # Если API не ответил, считаем что тренд нулевой
+    return 0.0
 
 async def check_stickers(session, inspect_link):
     url = f"https://api.csfloat.com/v1/me/inspect?url={urllib.parse.quote(inspect_link)}"
@@ -156,7 +154,6 @@ async def parser_loop():
             for item_name, base_price in target_items.items():
                 if not parser_running: break
                 
-                # Выбор прокси, если они добавлены
                 current_proxy = random.choice(proxy_list) if proxy_list else None
                 url = f"https://steamcommunity.com/market/listings/730/{urllib.parse.quote(item_name)}/render/?query=&start=0&count=10&country=RU&language=russian&currency=5"
                 
@@ -172,10 +169,9 @@ async def parser_loop():
                                 
                                 # ПРОВЕРКА 1: Просадка базы
                                 if final_price <= target_drop_price:
-                                    
-                                    # ПРОВЕРКА 2: Фильтр недельного тренда (на лету!)
+                                    # ПРОВЕРКА 2: Фильтр недельного тренда
                                     trend = await check_week_trend(session, item_name)
-                                    if trend >= max_week_trend_drop: # Пропускаем, если тренд не хуже нашего лимита
+                                    if trend >= max_week_trend_drop:
                                         await bot.send_message(
                                             ADMIN_ID,
                                             f"🔥 <b>СКИН УПАЛ (Тренд в норме: {trend:.1f}%)</b>\n"
@@ -211,11 +207,31 @@ async def parser_loop():
                 except Exception as e:
                     logging.error(f"Ошибка парсинга {item_name}: {e}")
                 
-                await asyncio.sleep(2) # Пауза между запросами
+                await asyncio.sleep(2)
+
+# ==========================================
+# 6. ВЕБ-СЕРВЕР ДЛЯ РЕНДЕРА И ЗАПУСК БОТА
+# ==========================================
+async def handle_ping(request):
+    """Фейковый ответ для проверок Render"""
+    return web.Response(text="Bot is running!")
 
 async def main():
+    # Запуск фейкового веб-сервера
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render передает свой порт, иначе используем 10000
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logging.info(f"Web server started on port {port} to satisfy Render")
+
+    # Запуск Telegram-бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-                                   
+                
