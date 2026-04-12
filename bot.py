@@ -132,46 +132,54 @@ async def cmd_set_trend(message: types.Message, command: CommandObject):
 # 4. АВТО-ЗАГРУЗКА ТОП-1000 ЛИКВИДНОСТИ
 # ==========================================
 async def load_top_1000_liquid_items():
-    """Скачивает рынок, сортирует по количеству продаж и отдает Топ-1000"""
+    """Скачивает рынок, притворяясь браузером, и отдает Топ-1000"""
     url = "https://csgobackpack.net/api/GetItemsList/v2/"
     temp_items = []
     
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=20) as resp:
+            async with session.get(url, headers=headers, timeout=30) as resp:
+                if resp.status != 200:
+                    logging.error(f"Ошибка от Backpack: Код {resp.status}")
+                    return {}
+                    
                 data = await resp.json()
                 if data.get("success"):
                     items_list = data.get("items_list", {})
                     for name, info in items_list.items():
                         prices = info.get("price", {})
-                        if prices:
+                        
+                        if isinstance(prices, dict):
                             data_24h = prices.get("24_hours", {})
-                            price_24h = data_24h.get("median", 0)
-                            
-                            # Получаем объем продаж (ликвидность)
-                            volume_str = data_24h.get("sold", "0")
-                            try:
-                                volume = int(str(volume_str).replace(',', ''))
-                            except:
-                                volume = 0
+                            if isinstance(data_24h, dict):
+                                price_24h = data_24h.get("median", 0)
                                 
-                            if price_24h > 0 and volume > 0:
-                                temp_items.append({
-                                    'name': name,
-                                    'price': float(price_24h) * 90.0, # Перевод в рубли
-                                    'volume': volume
-                                })
+                                volume_str = data_24h.get("sold", "0")
+                                try:
+                                    volume = int(str(volume_str).replace(',', ''))
+                                except:
+                                    volume = 0
+                                    
+                                if price_24h > 0 and volume > 0:
+                                    temp_items.append({
+                                        'name': name,
+                                        'price': float(price_24h) * 90.0, # Перевод в рубли (примерный курс)
+                                        'volume': volume
+                                    })
     except Exception as e:
         logging.error(f"Ошибка загрузки базы рынка: {e}")
         return {}
 
-    # Сортируем по объему (от самых продаваемых к менее)
+    # Сортируем по объему
     temp_items.sort(key=lambda x: x['volume'], reverse=True)
     
     # Берем топ 1000
     top_1000 = temp_items[:1000]
     
-    # Переводим обратно в нужный формат словаря {"Название": цена}
     loaded_items = {item['name']: item['price'] for item in top_1000}
     return loaded_items
 
@@ -185,8 +193,11 @@ async def cmd_start_parser(message: types.Message):
         target_items = await load_top_1000_liquid_items()
         await message.answer(f"✅ База готова! Загружено предметов: {len(target_items)}")
         
-    parser_running = True
-    await message.answer("🚀 Снайпинг ликвидности запущен!")
+    if target_items:
+        parser_running = True
+        await message.answer("🚀 Снайпинг ликвидности запущен!")
+    else:
+        await message.answer("❌ Ошибка: Не удалось загрузить базу скинов. Попробуй позже.")
 
 @dp.message(Command("stop_parser"))
 async def cmd_stop_parser(message: types.Message):
@@ -318,4 +329,4 @@ if __name__ == "__main__":
     
     port = int(os.environ.get("PORT", 10000))
     web.run_app(app, host='0.0.0.0', port=port)
-    
+                     
