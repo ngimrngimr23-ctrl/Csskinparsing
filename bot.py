@@ -131,6 +131,22 @@ async def cmd_set_trend(message: types.Message, command: CommandObject):
 # ==========================================
 # 4. АВТО-ЗАГРУЗКА ТОП-1000 ЛИКВИДНОСТИ
 # ==========================================
+def safe_float(val):
+    """Бронированная функция конвертации в float"""
+    if val is None: return 0.0
+    try:
+        return float(val)
+    except:
+        return 0.0
+
+def safe_int(val):
+    """Бронированная функция конвертации в int"""
+    if val is None: return 0
+    try:
+        return int(str(val).replace(',', '').strip())
+    except:
+        return 0
+
 async def load_top_1000_liquid_items():
     url = "https://csgobackpack.net/api/GetItemsList/v2/"
     temp_items = []
@@ -156,18 +172,9 @@ async def load_top_1000_liquid_items():
                             data_24h = prices.get("24_hours", {})
                             if isinstance(data_24h, dict):
                                 
-                                # ИСПРАВЛЕНИЕ: Жесткая проверка типов данных
-                                raw_price = data_24h.get("median")
-                                try:
-                                    price_24h = float(raw_price) if raw_price is not None else 0.0
-                                except:
-                                    price_24h = 0.0
-                                    
-                                raw_volume = data_24h.get("sold", "0")
-                                try:
-                                    volume = int(str(raw_volume).replace(',', '')) if raw_volume is not None else 0
-                                except:
-                                    volume = 0
+                                # ИСПОЛЬЗУЕМ БРОНИРОВАННЫЕ ФУНКЦИИ
+                                price_24h = safe_float(data_24h.get("median"))
+                                volume = safe_int(data_24h.get("sold"))
                                     
                                 if price_24h > 0 and volume > 0:
                                     temp_items.append({
@@ -179,6 +186,7 @@ async def load_top_1000_liquid_items():
         logging.error(f"Ошибка загрузки базы рынка: {e}")
         return {}
 
+    # Сортируем по объему
     temp_items.sort(key=lambda x: x['volume'], reverse=True)
     top_1000 = temp_items[:1000]
     loaded_items = {item['name']: item['price'] for item in top_1000}
@@ -216,10 +224,10 @@ async def check_week_trend(session, item_name):
         async with session.get(url, timeout=5) as resp:
             data = await resp.json()
             if data.get("success"):
-                avg_24h = float(data.get("average_price", 0))
+                avg_24h = safe_float(data.get("average_price"))
                 history = data.get("price_history", [])
                 if history:
-                    oldest_price = float(history[0]["average"]) 
+                    oldest_price = safe_float(history[0].get("average")) 
                     if oldest_price > 0:
                         return ((avg_24h - oldest_price) / oldest_price) * 100
     except: pass
@@ -264,7 +272,6 @@ async def parser_loop_async():
                                 final_price = (listing_data["price"] + listing_data["fee"]) / 100.0
                                 target_drop_price = base_price * (1 - (base_drop_percent / 100))
                                 
-                                # ПРОВЕРКА 1: Просадка базы
                                 if final_price <= target_drop_price:
                                     trend = await check_week_trend(session, item_name)
                                     if trend >= max_week_trend_drop:
@@ -277,7 +284,6 @@ async def parser_loop_async():
                                             parse_mode="HTML"
                                         )
 
-                                # ПРОВЕРКА 2: Наклейки
                                 asset = listing_data.get("asset", {})
                                 action_link = asset.get("market_actions", [{}])[0].get("link", "")
                                 if action_link:
@@ -330,4 +336,4 @@ if __name__ == "__main__":
     
     port = int(os.environ.get("PORT", 10000))
     web.run_app(app, host='0.0.0.0', port=port)
-    
+                        
