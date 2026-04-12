@@ -132,7 +132,6 @@ async def cmd_set_trend(message: types.Message, command: CommandObject):
 # 4. АВТО-ЗАГРУЗКА ТОП-1000 ЛИКВИДНОСТИ
 # ==========================================
 async def load_top_1000_liquid_items():
-    """Скачивает рынок, притворяясь браузером, и отдает Топ-1000"""
     url = "https://csgobackpack.net/api/GetItemsList/v2/"
     temp_items = []
     
@@ -156,30 +155,32 @@ async def load_top_1000_liquid_items():
                         if isinstance(prices, dict):
                             data_24h = prices.get("24_hours", {})
                             if isinstance(data_24h, dict):
-                                price_24h = data_24h.get("median", 0)
                                 
-                                volume_str = data_24h.get("sold", "0")
+                                # ИСПРАВЛЕНИЕ: Жесткая проверка типов данных
+                                raw_price = data_24h.get("median")
                                 try:
-                                    volume = int(str(volume_str).replace(',', ''))
+                                    price_24h = float(raw_price) if raw_price is not None else 0.0
+                                except:
+                                    price_24h = 0.0
+                                    
+                                raw_volume = data_24h.get("sold", "0")
+                                try:
+                                    volume = int(str(raw_volume).replace(',', '')) if raw_volume is not None else 0
                                 except:
                                     volume = 0
                                     
                                 if price_24h > 0 and volume > 0:
                                     temp_items.append({
                                         'name': name,
-                                        'price': float(price_24h) * 90.0, # Перевод в рубли (примерный курс)
+                                        'price': price_24h * 90.0, # Перевод в рубли
                                         'volume': volume
                                     })
     except Exception as e:
         logging.error(f"Ошибка загрузки базы рынка: {e}")
         return {}
 
-    # Сортируем по объему
     temp_items.sort(key=lambda x: x['volume'], reverse=True)
-    
-    # Берем топ 1000
     top_1000 = temp_items[:1000]
-    
     loaded_items = {item['name']: item['price'] for item in top_1000}
     return loaded_items
 
@@ -329,4 +330,4 @@ if __name__ == "__main__":
     
     port = int(os.environ.get("PORT", 10000))
     web.run_app(app, host='0.0.0.0', port=port)
-                     
+    
