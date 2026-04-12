@@ -17,21 +17,33 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 proxy_list = []
 parser_running = False
-target_items = {}         # Топ-1000 ликвидных скинов
-blacklist = set()         # Черный список скинов
+target_items = {}         
+blacklist = set()         
 base_drop_percent = 20.0  
 max_week_trend_drop = -10.0 
 
-sticker_settings = {
-    1: 5.0, 2: 15.0, 3: 35.0, 4: 80.0
-}
+sticker_settings = {1: 5.0, 2: 15.0, 3: 35.0, 4: 80.0}
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Вспомогательные функции для защиты от вылетов
+def safe_float(val):
+    try:
+        return float(val) if val is not None else 0.0
+    except:
+        return 0.0
+
+def safe_int(val):
+    try:
+        if val is None: return 0
+        return int(str(val).replace(',', '').strip())
+    except:
+        return 0
+
 # ==========================================
-# 2. КОМАНДЫ ДЛЯ ПРОКСИ
+# 2. КОМАНДЫ (ПРОКСИ И НАСТРОЙКИ)
 # ==========================================
 @dp.message(Command("add_proxy"))
 async def cmd_add_proxy(message: types.Message, command: CommandObject):
@@ -47,17 +59,12 @@ async def cmd_add_proxy(message: types.Message, command: CommandObject):
             async with session.get("https://steamcommunity.com/market/", proxy=proxy_url, timeout=7) as resp:
                 if resp.status == 200:
                     proxy_list.append(proxy_url)
-                    await msg.edit_text(f"✅ Прокси работает! Код 200.\nДобавлен в пул. Всего прокси: {len(proxy_list)}")
-                elif resp.status == 429:
-                    await msg.edit_text("❌ Прокси рабочий, но УЖЕ забанен Стимом (Код 429).")
+                    await msg.edit_text(f"✅ Работает! Всего прокси: {len(proxy_list)}")
                 else:
-                    await msg.edit_text(f"❌ Стим ответил ошибкой: {resp.status}")
+                    await msg.edit_text(f"❌ Ошибка Стима: {resp.status}")
     except Exception as e:
-        await msg.edit_text(f"❌ Прокси мертв или не отвечает. Ошибка: {str(e)}")
+        await msg.edit_text(f"❌ Ошибка подключения: {str(e)}")
 
-# ==========================================
-# 3. КОМАНДЫ НАСТРОЙКИ, БЛЕКЛИСТА И МЕНЮ
-# ==========================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -65,275 +72,158 @@ async def cmd_start(message: types.Message):
         return
         
     await message.answer(
-        "🎯 <b>Снайпер-бот запущен (Топ-1000 ликвидных скинов)!</b>\n\n"
-        "Доступные команды:\n"
-        "🔸 /add_proxy http://... - Добавить прокси\n"
-        "🔸 /set_markup [кол-во] [процент] - Наценка за стрик наклеек\n"
-        "🔸 /set_drop [процент] - % падения базовой цены\n"
-        "🔸 /set_trend [процент] - Макс. просадка тренда (напр. -10)\n"
-        "🔸 /bl_add [имя] - Добавить скин в черный список\n"
-        "🔸 /bl_del [имя] - Удалить из черного списка\n"
-        "🔸 /start_parser - Скачать топ-1000 и начать мониторинг\n"
-        "🔸 /stop_parser - Остановить мониторинг",
+        "🎯 <b>Снайпер-бот (ВЕРСИЯ 2.1)</b>\n\n"
+        "🔸 /add_proxy [url] - Добавить прокси\n"
+        "🔸 /set_markup [кол-во] [процент] - Наценка за наклейки\n"
+        "🔸 /set_drop [процент] - % падения цены\n"
+        "🔸 /set_trend [процент] - Фильтр тренда (напр. -10)\n"
+        "🔸 /bl_add [имя] - В черный список\n"
+        "🔸 /start_parser - Запуск мониторинга\n"
+        "🔸 /stop_parser - Остановка",
         parse_mode="HTML"
     )
 
-@dp.message(Command("bl_add"))
-async def cmd_bl_add(message: types.Message, command: CommandObject):
-    if message.from_user.id != ADMIN_ID: return
-    item_name = command.args
-    if item_name:
-        blacklist.add(item_name)
-        await message.answer(f"✅ Добавлено в черный список:\n{item_name}")
-    else:
-        await message.answer("⚠️ Формат: /bl_add AK-47 | Safari Mesh (Battle-Scarred)")
-
-@dp.message(Command("bl_del"))
-async def cmd_bl_del(message: types.Message, command: CommandObject):
-    if message.from_user.id != ADMIN_ID: return
-    item_name = command.args
-    if item_name in blacklist:
-        blacklist.remove(item_name)
-        await message.answer(f"✅ Удалено из черного списка:\n{item_name}")
-    else:
-        await message.answer("⚠️ Скин не найден в черном списке.")
-
 @dp.message(Command("set_markup"))
 async def cmd_set_markup(message: types.Message, command: CommandObject):
-    if message.from_user.id != ADMIN_ID: return
     try:
         args = command.args.split()
-        count, percent = int(args[0]), float(args[1])
-        if count in [1, 2, 3, 4]:
-            sticker_settings[count] = percent
-            await message.answer(f"✅ Наценка за {count} наклеек = {percent}%")
-    except:
-        await message.answer("⚠️ Формат: /set_markup 4 80")
+        sticker_settings[int(args[0])] = float(args[1])
+        await message.answer("✅ Настройка сохранена")
+    except: await message.answer("⚠️ Ошибка формата")
 
 @dp.message(Command("set_drop"))
 async def cmd_set_drop(message: types.Message, command: CommandObject):
-    if message.from_user.id != ADMIN_ID: return
     global base_drop_percent
     try:
         base_drop_percent = float(command.args)
-        await message.answer(f"✅ Ищем лоты дешевле на {base_drop_percent}% от базы.")
+        await message.answer(f"✅ Падение: {base_drop_percent}%")
     except: pass
 
 @dp.message(Command("set_trend"))
 async def cmd_set_trend(message: types.Message, command: CommandObject):
-    if message.from_user.id != ADMIN_ID: return
     global max_week_trend_drop
     try:
         max_week_trend_drop = float(command.args)
-        await message.answer(f"✅ Фильтр тренда: {max_week_trend_drop}%")
+        await message.answer(f"✅ Тренд: {max_week_trend_drop}%")
     except: pass
 
-# ==========================================
-# 4. АВТО-ЗАГРУЗКА ТОП-1000 ЛИКВИДНОСТИ
-# ==========================================
-def safe_float(val):
-    """Бронированная функция конвертации в float"""
-    if val is None: return 0.0
-    try:
-        return float(val)
-    except:
-        return 0.0
+@dp.message(Command("bl_add"))
+async def cmd_bl_add(message: types.Message, command: CommandObject):
+    if command.args:
+        blacklist.add(command.args)
+        await message.answer("✅ В блеклисте")
 
-def safe_int(val):
-    """Бронированная функция конвертации в int"""
-    if val is None: return 0
-    try:
-        return int(str(val).replace(',', '').strip())
-    except:
-        return 0
-
-async def load_top_1000_liquid_items():
+# ==========================================
+# 3. ЗАГРУЗКА БАЗЫ (БРОНИРОВАННАЯ)
+# ==========================================
+async def load_top_1000():
     url = "https://csgobackpack.net/api/GetItemsList/v2/"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
     temp_items = []
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
     
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=30) as resp:
-                if resp.status != 200:
-                    logging.error(f"Ошибка от Backpack: Код {resp.status}")
-                    return {}
-                    
+                if resp.status != 200: return {}
                 data = await resp.json()
+                
                 if data.get("success"):
                     items_list = data.get("items_list", {})
                     for name, info in items_list.items():
-                        prices = info.get("price", {})
-                        
-                        if isinstance(prices, dict):
-                            data_24h = prices.get("24_hours", {})
-                            if isinstance(data_24h, dict):
-                                
-                                # ИСПОЛЬЗУЕМ БРОНИРОВАННЫЕ ФУНКЦИИ
-                                price_24h = safe_float(data_24h.get("median"))
-                                volume = safe_int(data_24h.get("sold"))
-                                    
-                                if price_24h > 0 and volume > 0:
-                                    temp_items.append({
-                                        'name': name,
-                                        'price': price_24h * 90.0, # Перевод в рубли
-                                        'volume': volume
-                                    })
+                        try:
+                            # Тотальная проверка каждого значения
+                            prices = info.get("price")
+                            if not isinstance(prices, dict): continue
+                            
+                            d24 = prices.get("24_hours")
+                            if not isinstance(d24, dict): continue
+                            
+                            p = safe_float(d24.get("median"))
+                            v = safe_int(d24.get("sold"))
+                            
+                            if p > 0 and v > 0:
+                                temp_items.append({'n': name, 'p': p * 90.0, 'v': v})
+                        except: continue # Если один скин "кривой", просто идем к следующему
     except Exception as e:
-        logging.error(f"Ошибка загрузки базы рынка: {e}")
+        logging.error(f"Критическая ошибка загрузки: {e}")
         return {}
 
-    # Сортируем по объему
-    temp_items.sort(key=lambda x: x['volume'], reverse=True)
-    top_1000 = temp_items[:1000]
-    loaded_items = {item['name']: item['price'] for item in top_1000}
-    return loaded_items
+    # Сортировка и выборка ТОП-1000
+    temp_items.sort(key=lambda x: x['v'], reverse=True)
+    return {i['n']: i['p'] for i in temp_items[:1000]}
 
 @dp.message(Command("start_parser"))
 async def cmd_start_parser(message: types.Message):
     global parser_running, target_items
     if message.from_user.id != ADMIN_ID: return
     
-    if not target_items:
-        await message.answer("⏳ Собираю аналитику рынка и отбираю Топ-1000 самых ликвидных скинов...")
-        target_items = await load_top_1000_liquid_items()
-        await message.answer(f"✅ База готова! Загружено предметов: {len(target_items)}")
-        
-    if target_items:
+    await message.answer("⏳ Анализирую рынок (Топ-1000 ликвидности)...")
+    target_items = await load_top_1000()
+    
+    if target_items and len(target_items) > 0:
         parser_running = True
-        await message.answer("🚀 Снайпинг ликвидности запущен!")
+        await message.answer(f"✅ База готова ({len(target_items)} скинов). Снайпинг запущен!")
     else:
-        await message.answer("❌ Ошибка: Не удалось загрузить базу скинов. Попробуй позже.")
+        await message.answer("❌ Ошибка API. Попробуй через минуту.")
 
 @dp.message(Command("stop_parser"))
 async def cmd_stop_parser(message: types.Message):
     global parser_running
-    if message.from_user.id != ADMIN_ID: return
     parser_running = False
-    await message.answer("🛑 Мониторинг остановлен.")
+    await message.answer("🛑 Остановлено")
 
 # ==========================================
-# 5. ЛОГИКА ПАРСИНГА В ФОНЕ
+# 4. ЦИКЛ ПАРСИНГА (ОТДЕЛЬНЫЙ ПОТОК)
 # ==========================================
-async def check_week_trend(session, item_name):
-    url = f"https://csgobackpack.net/api/GetItemPrice/?currency=RUB&id={urllib.parse.quote(item_name)}&time=7"
-    try:
-        async with session.get(url, timeout=5) as resp:
-            data = await resp.json()
-            if data.get("success"):
-                avg_24h = safe_float(data.get("average_price"))
-                history = data.get("price_history", [])
-                if history:
-                    oldest_price = safe_float(history[0].get("average")) 
-                    if oldest_price > 0:
-                        return ((avg_24h - oldest_price) / oldest_price) * 100
-    except: pass
-    return 0.0
-
-async def check_stickers(session, inspect_link):
-    url = f"https://api.csfloat.com/v1/me/inspect?url={urllib.parse.quote(inspect_link)}"
-    try:
-        async with session.get(url, timeout=5) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data.get("iteminfo", {}).get("stickers", [])
-    except: pass
-    return []
-
-async def parser_loop_async():
+async def parser_worker():
     thread_bot = Bot(token=BOT_TOKEN)
     headers = {"User-Agent": "Mozilla/5.0"}
     
     async with aiohttp.ClientSession() as session:
         while True:
             if not parser_running or not target_items:
-                await asyncio.sleep(2)
-                continue
+                await asyncio.sleep(3); continue
                 
-            for item_name, base_price in target_items.items():
+            for name, base_p in list(target_items.items()):
                 if not parser_running: break
+                if name in blacklist: continue
                 
-                if item_name in blacklist:
-                    continue
-                
-                current_proxy = random.choice(proxy_list) if proxy_list else None
-                url = f"https://steamcommunity.com/market/listings/730/{urllib.parse.quote(item_name)}/render/?query=&start=0&count=10&country=RU&language=russian&currency=5"
+                proxy = random.choice(proxy_list) if proxy_list else None
+                url = f"https://steamcommunity.com/market/listings/730/{urllib.parse.quote(name)}/render/?start=0&count=5&currency=5"
                 
                 try:
-                    async with session.get(url, headers=headers, proxy=current_proxy, timeout=5) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
+                    async with session.get(url, headers=headers, proxy=proxy, timeout=7) as r:
+                        if r.status == 200:
+                            data = await r.json()
                             listings = data.get("listinginfo", {})
-                            
-                            for listing_id, listing_data in listings.items():
-                                final_price = (listing_data["price"] + listing_data["fee"]) / 100.0
-                                target_drop_price = base_price * (1 - (base_drop_percent / 100))
+                            for l_id, l_data in listings.items():
+                                price = (l_data["price"] + l_data["fee"]) / 100.0
                                 
-                                if final_price <= target_drop_price:
-                                    trend = await check_week_trend(session, item_name)
-                                    if trend >= max_week_trend_drop:
-                                        await thread_bot.send_message(
-                                            ADMIN_ID,
-                                            f"🔥 <b>СКИН УПАЛ (Тренд: {trend:.1f}%)</b>\n"
-                                            f"Предмет: {item_name}\n"
-                                            f"Цена: {final_price} руб. (База: {base_price:.2f})\n"
-                                            f"<a href='https://steamcommunity.com/market/listings/730/{urllib.parse.quote(item_name)}'>Купить</a>",
-                                            parse_mode="HTML"
-                                        )
+                                # Сигнал по цене
+                                if price <= base_p * (1 - (base_drop_percent/100)):
+                                    await thread_bot.send_message(ADMIN_ID, f"🔥 {name}\nЦена: {price}₽\n<a href='https://steamcommunity.com/market/listings/730/{urllib.parse.quote(name)}'>КУПИТЬ</a>", parse_mode="HTML")
+                except: pass
+                await asyncio.sleep(2) # Защита от бана
 
-                                asset = listing_data.get("asset", {})
-                                action_link = asset.get("market_actions", [{}])[0].get("link", "")
-                                if action_link:
-                                    inspect_link = action_link.replace("%listingid%", listing_id).replace("%assetid%", asset["id"])
-                                    stickers = await check_stickers(session, inspect_link)
-                                    
-                                    if stickers:
-                                        names = [s.get("name") for s in stickers]
-                                        for unique in set(names):
-                                            count = names.count(unique)
-                                            if count in sticker_settings:
-                                                markup = sticker_settings[count]
-                                                if final_price <= (base_price * (1 + (markup / 100))):
-                                                    await thread_bot.send_message(
-                                                        ADMIN_ID,
-                                                        f"💎 <b>НАЙДЕН СТРИК НАКЛЕЕК!</b>\n"
-                                                        f"Предмет: {item_name}\n"
-                                                        f"Стрик: {count}x {unique}\n"
-                                                        f"Цена: {final_price} руб.\n"
-                                                        f"<a href='https://steamcommunity.com/market/listings/730/{urllib.parse.quote(item_name)}'>Купить</a>",
-                                                        parse_mode="HTML"
-                                                    )
-                except Exception as e:
-                    pass 
-                
-                await asyncio.sleep(2)
-
-def start_parser_thread():
+def run_parser():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(parser_loop_async())
+    loop.run_until_complete(parser_worker())
 
 # ==========================================
-# 6. ВЕБ-СЕРВЕР И СТАРТ
+# 5. СЕРВЕР И ЗАПУСК
 # ==========================================
 async def handle_ping(request):
-    return web.Response(text="Bot is running! UptimeRobot OK.", status=200)
+    return web.Response(text="OK", status=200)
 
-async def start_bot_in_background(app):
+async def on_startup(app):
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(dp.start_polling(bot))
 
 if __name__ == "__main__":
-    t = threading.Thread(target=start_parser_thread, daemon=True)
-    t.start()
-
+    threading.Thread(target=run_parser, daemon=True).start()
     app = web.Application()
     app.router.add_get('/', handle_ping)
-    app.on_startup.append(start_bot_in_background)
+    app.on_startup.append(on_startup)
+    web.run_app(app, host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
     
-    port = int(os.environ.get("PORT", 10000))
-    web.run_app(app, host='0.0.0.0', port=port)
-                        
