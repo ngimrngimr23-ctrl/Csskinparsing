@@ -1,229 +1,247 @@
 import asyncio
+import json
 import logging
-import urllib.parse
-import os
-import random
-import threading
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, CommandObject
 import aiohttp
-from aiohttp import web
+import re
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # ==========================================
-# 1. ПЕРЕМЕННЫЕ И НАСТРОЙКИ
+# 1. ТВОИ ДАННЫЕ (ЗАПОЛНИТЬ ПЕРЕД ЗАПУСКОМ)
 # ==========================================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+API_TOKEN = '8729170911:AAHNn8T5NIUbsdsjQ6PNpzmBJbLsM_3ZrVg'
+STEAM_APIS_KEY = 'd3UBKCHmu7CHGLiokpc6UR-mOtU' # Твой купленный ключ
+ADMIN_ID = 368097348  # Твой ID в Телеграм (узнай у @userinfobot)
 
-proxy_list = []
-parser_running = False
-target_items = {}         
-blacklist = set()         
-base_drop_percent = 20.0  
-max_week_trend_drop = -10.0 
+# Если есть прокси, раскомментируй строку ниже и вставь свои данные
+# PROXY_URL = 'http://login:password@ip:port'
+PROXY_URL = None 
 
-sticker_settings = {1: 5.0, 2: 15.0, 3: 35.0, 4: 80.0}
+SETTINGS_FILE = 'settings.json'
 
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+# Базовые настройки по умолчанию (как на твоих скринах)
+DEFAULT_SETTINGS = {
+    "min_price": 0.8,
+    "drop_percentage": 15.0,
+    "sticker_markup": [8.0, 6.5, 5.5], # Ниже 100$, 100-300$, Выше 300$
+    "streak_markup": {2: 10.0, 3: 14.0, 4: 20.0, 5: 25.0}
+}
 
-# Вспомогательные функции для защиты от вылетов
-def safe_float(val):
+# ==========================================
+# 2. ИНИЦИАЛИЗАЦИЯ И ХРАНЕНИЕ НАСТРОЕК
+# ==========================================
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+def load_settings():
     try:
-        return float(val) if val is not None else 0.0
-    except:
-        return 0.0
+        with open(SETTINGS_FILE, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return DEFAULT_SETTINGS
 
-def safe_int(val):
-    try:
-        if val is None: return 0
-        return int(str(val).replace(',', '').strip())
-    except:
-        return 0
+def save_settings(settings):
+    with open(SETTINGS_FILE, 'w') as f:
+        json.dump(settings, f, indent=4)
+
+settings = load_settings()
+
+class SetupStates(StatesGroup):
+    waiting_for_drop_perc = State()
+    waiting_for_sticker_markups = State()
 
 # ==========================================
-# 2. КОМАНДЫ (ПРОКСИ И НАСТРОЙКИ)
+# 3. КЛАВИАТУРЫ (ИНТЕРФЕЙС)
 # ==========================================
-@dp.message(Command("add_proxy"))
-async def cmd_add_proxy(message: types.Message, command: CommandObject):
-    if message.from_user.id != ADMIN_ID: return
-    proxy_url = command.args
-    if not proxy_url:
-        await message.answer("⚠️ Формат: /add_proxy http://user:pass@ip:port")
-        return
+def get_main_kb():
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="Общие настройки"), KeyboardButton(text="Настройки стикеров")],
+        [KeyboardButton(text="Настройки флоатов"), KeyboardButton(text="Настройки оферов")],
+        [KeyboardButton(text="Вернуться")]
+    ], resize_keyboard=True)
 
-    msg = await message.answer("⏳ Проверяю прокси на Стиме...")
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://steamcommunity.com/market/", proxy=proxy_url, timeout=7) as resp:
-                if resp.status == 200:
-                    proxy_list.append(proxy_url)
-                    await msg.edit_text(f"✅ Работает! Всего прокси: {len(proxy_list)}")
-                else:
-                    await msg.edit_text(f"❌ Ошибка Стима: {resp.status}")
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка подключения: {str(e)}")
+def get_stickers_kb():
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="Минимальная цена"), KeyboardButton(text="Наценки за стикеры")],
+        [KeyboardButton(text="Наценки за стрики"), KeyboardButton(text="Потертости стриков")],
+        [KeyboardButton(text="Вернуться в главное меню")]
+    ], resize_keyboard=True)
 
+# ==========================================
+# 4. ОБРАБОТЧИКИ КНОПОК
+# ==========================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer(f"❌ Нет доступа. Ваш ID: {message.from_user.id}")
-        return
-        
-    await message.answer(
-        "🎯 <b>Снайпер-бот (ВЕРСИЯ 2.1)</b>\n\n"
-        "🔸 /add_proxy [url] - Добавить прокси\n"
-        "🔸 /set_markup [кол-во] [процент] - Наценка за наклейки\n"
-        "🔸 /set_drop [процент] - % падения цены\n"
-        "🔸 /set_trend [процент] - Фильтр тренда (напр. -10)\n"
-        "🔸 /bl_add [имя] - В черный список\n"
-        "🔸 /start_parser - Запуск мониторинга\n"
-        "🔸 /stop_parser - Остановка",
-        parse_mode="HTML"
+    await message.answer("🚀 Снайпер-бот запущен! Выберите раздел:", reply_markup=get_main_kb())
+
+@dp.message(F.text == "Вернуться в главное меню")
+async def back_to_main(message: types.Message):
+    await message.answer("Главное меню:", reply_markup=get_main_kb())
+
+# --- Настройки оферов ---
+@dp.message(F.text == "Настройки оферов")
+async def setup_offers(message: types.Message, state: FSMContext):
+    await message.answer(f"Текущий порог: {settings.get('drop_percentage', 15.0)}%\nВведите новый процент:")
+    await state.set_state(SetupStates.waiting_for_drop_perc)
+
+@dp.message(SetupStates.waiting_for_drop_perc)
+async def process_drop_perc(message: types.Message, state: FSMContext):
+    try:
+        val = float(message.text.replace(',', '.'))
+        settings['drop_percentage'] = val
+        save_settings(settings)
+        await message.answer(f"✅ Сохранено! Ищем скидки от {val}%", reply_markup=get_main_kb())
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Введите число!")
+
+# --- Настройки стикеров ---
+@dp.message(F.text == "Настройки стикеров")
+async def sticker_menu(message: types.Message):
+    markups = settings.get('sticker_markup', [8.0, 6.5, 5.5])
+    text = (
+        "📊 <b>Настройки стикеров:</b>\n\n"
+        f"Наценка (>300$): {markups[2]}%\n"
+        f"Наценка (100-300$): {markups[1]}%\n"
+        f"Наценка (<100$): {markups[0]}%\n"
     )
+    await message.answer(text, reply_markup=get_stickers_kb(), parse_mode="HTML")
 
-@dp.message(Command("set_markup"))
-async def cmd_set_markup(message: types.Message, command: CommandObject):
+@dp.message(F.text == "Наценки за стикеры")
+async def ask_sticker_markups(message: types.Message, state: FSMContext):
+    await message.answer("Укажите наценки через пробел (<100$ 100-300$ >300$):")
+    await state.set_state(SetupStates.waiting_for_sticker_markups)
+
+@dp.message(SetupStates.waiting_for_sticker_markups)
+async def process_sticker_markups(message: types.Message, state: FSMContext):
+    parts = message.text.replace(',', '.').split()
+    if len(parts) != 3:
+        await message.answer("❌ Нужно ввести 3 числа через пробел!")
+        return
     try:
-        args = command.args.split()
-        sticker_settings[int(args[0])] = float(args[1])
-        await message.answer("✅ Настройка сохранена")
-    except: await message.answer("⚠️ Ошибка формата")
-
-@dp.message(Command("set_drop"))
-async def cmd_set_drop(message: types.Message, command: CommandObject):
-    global base_drop_percent
-    try:
-        base_drop_percent = float(command.args)
-        await message.answer(f"✅ Падение: {base_drop_percent}%")
-    except: pass
-
-@dp.message(Command("set_trend"))
-async def cmd_set_trend(message: types.Message, command: CommandObject):
-    global max_week_trend_drop
-    try:
-        max_week_trend_drop = float(command.args)
-        await message.answer(f"✅ Тренд: {max_week_trend_drop}%")
-    except: pass
-
-@dp.message(Command("bl_add"))
-async def cmd_bl_add(message: types.Message, command: CommandObject):
-    if command.args:
-        blacklist.add(command.args)
-        await message.answer("✅ В блеклисте")
+        settings['sticker_markup'] = [float(parts[0]), float(parts[1]), float(parts[2])]
+        save_settings(settings)
+        await message.answer("✅ Наценки обновлены!", reply_markup=get_stickers_kb())
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Введите только числа!")
 
 # ==========================================
-# 3. ЗАГРУЗКА БАЗЫ (БРОНИРОВАННАЯ)
+# 5. МАТЕМАТИКА И ОЦЕНКА
 # ==========================================
-async def load_top_1000():
-    url = "https://csgobackpack.net/api/GetItemsList/v2/"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
-    temp_items = []
+def calculate_fair_value(skin_name, stickers, base_prices):
+    skin_base_price = base_prices.get(skin_name, 0)
+    if skin_base_price == 0:
+        return 0
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=30) as resp:
-                if resp.status != 200: return {}
-                data = await resp.json()
-                
-                if data.get("success"):
-                    items_list = data.get("items_list", {})
-                    for name, info in items_list.items():
-                        try:
-                            # Тотальная проверка каждого значения
-                            prices = info.get("price")
-                            if not isinstance(prices, dict): continue
-                            
-                            d24 = prices.get("24_hours")
-                            if not isinstance(d24, dict): continue
-                            
-                            p = safe_float(d24.get("median"))
-                            v = safe_int(d24.get("sold"))
-                            
-                            if p > 0 and v > 0:
-                                temp_items.append({'n': name, 'p': p * 90.0, 'v': v})
-                        except: continue # Если один скин "кривой", просто идем к следующему
-    except Exception as e:
-        logging.error(f"Критическая ошибка загрузки: {e}")
-        return {}
-
-    # Сортировка и выборка ТОП-1000
-    temp_items.sort(key=lambda x: x['v'], reverse=True)
-    return {i['n']: i['p'] for i in temp_items[:1000]}
-
-@dp.message(Command("start_parser"))
-async def cmd_start_parser(message: types.Message):
-    global parser_running, target_items
-    if message.from_user.id != ADMIN_ID: return
+    total_overpay = 0
+    sticker_counts = {}
     
-    await message.answer("⏳ Анализирую рынок (Топ-1000 ликвидности)...")
-    target_items = await load_top_1000()
-    
-    if target_items and len(target_items) > 0:
-        parser_running = True
-        await message.answer(f"✅ База готова ({len(target_items)} скинов). Снайпинг запущен!")
-    else:
-        await message.answer("❌ Ошибка API. Попробуй через минуту.")
+    for s_name in stickers:
+        full_name = f"Sticker | {s_name}"
+        s_price = base_prices.get(full_name, 0)
+        
+        if s_price > 0:
+            sticker_counts[s_name] = sticker_counts.get(s_name, 0) + 1
+            if s_price >= 300: pct = settings['sticker_markup'][2]
+            elif 100 <= s_price < 300: pct = settings['sticker_markup'][1]
+            else: pct = settings['sticker_markup'][0]
+            
+            total_overpay += (s_price * (pct / 100))
 
-@dp.message(Command("stop_parser"))
-async def cmd_stop_parser(message: types.Message):
-    global parser_running
-    parser_running = False
-    await message.answer("🛑 Остановлено")
+    # Стрики
+    streak_dict = {str(k): v for k, v in settings['streak_markup'].items()}
+    for s_name, count in sticker_counts.items():
+        if count >= 2 and str(count) in streak_dict:
+            total_overpay += (total_overpay * (streak_dict[str(count)] / 100))
+
+    return skin_base_price + total_overpay
 
 # ==========================================
-# 4. ЦИКЛ ПАРСИНГА (ОТДЕЛЬНЫЙ ПОТОК)
+# 6. ЯДРО БОТА (ПАРСЕР СТИМА)
 # ==========================================
-async def parser_worker():
-    thread_bot = Bot(token=BOT_TOKEN)
-    headers = {"User-Agent": "Mozilla/5.0"}
+async def market_parser():
+    base_prices = {}
+    steam_url = "https://steamcommunity.com/market/search/render/?query=&start=0&count=10&sort_column=default&sort_dir=desc&appid=730&norender=1"
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
     
     async with aiohttp.ClientSession() as session:
         while True:
-            if not parser_running or not target_items:
-                await asyncio.sleep(3); continue
-                
-            for name, base_p in list(target_items.items()):
-                if not parser_running: break
-                if name in blacklist: continue
-                
-                proxy = random.choice(proxy_list) if proxy_list else None
-                url = f"https://steamcommunity.com/market/listings/730/{urllib.parse.quote(name)}/render/?start=0&count=5&currency=5"
-                
-                try:
-                    async with session.get(url, headers=headers, proxy=proxy, timeout=7) as r:
-                        if r.status == 200:
-                            data = await r.json()
-                            listings = data.get("listinginfo", {})
-                            for l_id, l_data in listings.items():
-                                price = (l_data["price"] + l_data["fee"]) / 100.0
-                                
-                                # Сигнал по цене
-                                if price <= base_p * (1 - (base_drop_percent/100)):
-                                    await thread_bot.send_message(ADMIN_ID, f"🔥 {name}\nЦена: {price}₽\n<a href='https://steamcommunity.com/market/listings/730/{urllib.parse.quote(name)}'>КУПИТЬ</a>", parse_mode="HTML")
-                except: pass
-                await asyncio.sleep(2) # Защита от бана
+            try:
+                # 1. Загрузка базы цен (раз в 30 минут, тут упрощено для старта)
+                if not base_prices:
+                    print("🔄 Загружаем прайс-лист SteamApis...")
+                    async with session.get(f"https://api.steamapis.com/market/items/730?api_key={STEAM_APIS_KEY}") as resp:
+                        if resp.status == 200:
+                            for item in (await resp.json()).get('data', []):
+                                base_prices[item['market_hash_name']] = item.get('price', {}).get('avg', 0)
+                            print(f"✅ База загружена! Предметов: {len(base_prices)}")
 
-def run_parser():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(parser_worker())
+                # 2. Парсинг Стима
+                kwargs = {"headers": headers}
+                if PROXY_URL: kwargs["proxy"] = PROXY_URL
+                
+                async with session.get(steam_url, **kwargs) as response:
+                    if response.status == 200:
+                        results = (await response.json()).get("results", [])
+                        
+                        for item in results:
+                            hash_name = item.get("hash_name")
+                            price_str = item.get("sell_price_text", "$0.00").replace('$', '').replace(',', '').replace(' USD', '')
+                            current_price = float(price_str)
+                            
+                            if current_price < settings['min_price']: continue
+
+                            # Ищем стикеры
+                            stickers = []
+                            for desc in item.get("asset_description", {}).get("descriptions", []):
+                                val_text = desc.get("value", "")
+                                if "Sticker:" in val_text:
+                                    found = re.findall(r'<br>Sticker:(.*?)</center>', val_text)
+                                    if found:
+                                        clean = re.sub(r'<[^>]+>', '', found[0])
+                                        stickers = [s.strip() for s in clean.split(',')]
+                            
+                            # Считаем выгоду
+                            fair_price = calculate_fair_value(hash_name, stickers, base_prices)
+                            profit = fair_price - current_price
+                            
+                            if fair_price > 0 and (profit > 0.1 or (1 - (current_price / base_prices.get(hash_name, current_price))) * 100 >= settings['drop_percentage']):
+                                st_text = "\n".join([f"🀄️ {s}" for s in stickers]) if stickers else "Нет"
+                                msg = (
+                                    f"🎯 <b>НАЙДЕН ЛОТ!</b>\n"
+                                    f"📦 <b>{hash_name}</b>\n\n"
+                                    f"💰 Цена сейчас: <b>{current_price}$</b>\n"
+                                    f"⚖️ Справедливая цена: <b>{round(fair_price, 2)}$</b>\n"
+                                    f"📈 Профит: <b>+{round(profit, 2)}$</b>\n\n"
+                                    f"🔖 <b>Стикеры:</b>\n{st_text}\n\n"
+                                    f"🔗 <a href='https://steamcommunity.com/market/listings/730/{hash_name}'>Купить в Steam</a>"
+                                )
+                                await bot.send_message(ADMIN_ID, msg, parse_mode="HTML", disable_web_page_preview=True)
+                                await asyncio.sleep(1)
+
+                    elif response.status == 429:
+                        print("⚠️ Steam дал лимит. Ждем 30 сек...")
+                        await asyncio.sleep(30)
+                        
+                await asyncio.sleep(5) 
+                
+            except Exception as e:
+                logging.error(f"Ошибка парсера: {e}")
+                await asyncio.sleep(10)
 
 # ==========================================
-# 5. СЕРВЕР И ЗАПУСК
+# 7. ЗАПУСК
 # ==========================================
-async def handle_ping(request):
-    return web.Response(text="OK", status=200)
-
-async def on_startup(app):
-    await bot.delete_webhook(drop_pending_updates=True)
-    asyncio.create_task(dp.start_polling(bot))
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    asyncio.create_task(market_parser())
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_parser, daemon=True).start()
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    app.on_startup.append(on_startup)
-    web.run_app(app, host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
-    
+    asyncio.run(main())
+            
