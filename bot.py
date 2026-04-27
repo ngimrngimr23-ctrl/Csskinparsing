@@ -67,22 +67,22 @@ def get_stickers_kb():
         [KeyboardButton(text="Вернуться в главное меню")]
     ], resize_keyboard=True)
 
-# --- 4. ОБРАБОТЧИКИ (С ДОБАВЛЕНИЕМ state="*") ---
+# --- 4. ОБРАБОТЧИКИ ---
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-@dp.message(Command("start"), state="*")
+@dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("🚀 Снайпер-бот запущен и мониторит рынок!", reply_markup=get_main_kb())
 
-@dp.message(F.text.in_(["Вернуться в главное меню", "Вернуться"]), state="*")
+@dp.message(F.text.in_(["Вернуться в главное меню", "Вернуться"]))
 async def back_to_main(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("Главное меню:", reply_markup=get_main_kb())
 
 # МЕНЮ СТИКЕРОВ
-@dp.message(F.text == "Настройки стикеров", state="*")
+@dp.message(F.text == "Настройки стикеров")
 async def sticker_menu(message: types.Message, state: FSMContext):
     await state.clear()
     m = settings.get('sticker_markup', [8.0, 6.5, 5.5])
@@ -98,7 +98,7 @@ async def sticker_menu(message: types.Message, state: FSMContext):
 
 # --- ОБРАБОТКА НАЖАТИЯ ВНУТРЕННИХ КНОПОК ---
 
-@dp.message(F.text == "Минимальная цена", state="*")
+@dp.message(F.text == "Минимальная цена")
 async def edit_min(m: types.Message, state: FSMContext):
     await state.set_state(SetupStates.waiting_for_min_price)
     await m.answer("Введите мин. цену предмета (например, 0.5):")
@@ -114,7 +114,7 @@ async def proc_min(m: types.Message, state: FSMContext):
     except:
         await m.answer("❌ Введите число!")
 
-@dp.message(F.text == "Наценки за стикеры", state="*")
+@dp.message(F.text == "Наценки за стикеры")
 async def edit_st_markup(m: types.Message, state: FSMContext):
     await state.set_state(SetupStates.waiting_for_sticker_markups)
     await m.answer("Введите 3 наценки через пробел (напр: 10 8 5):")
@@ -133,7 +133,7 @@ async def proc_st_markup(m: types.Message, state: FSMContext):
     except:
         await m.answer("❌ Ошибка ввода!")
 
-@dp.message(F.text == "Наценки за стрики", state="*")
+@dp.message(F.text == "Наценки за стрики")
 async def edit_streak(m: types.Message, state: FSMContext):
     await state.set_state(SetupStates.waiting_for_streak_markups)
     await m.answer("Введите 4 числа для стриков (2шт 3шт 4шт 5шт):")
@@ -152,13 +152,13 @@ async def proc_streak(m: types.Message, state: FSMContext):
     except:
         await m.answer("❌ Ошибка ввода!")
 
-@dp.message(F.text == "Потертости стриков", state="*")
+@dp.message(F.text == "Потертости стриков")
 async def edit_wear(m: types.Message, state: FSMContext):
     await state.clear()
     await m.answer("⚠️ Функция учета потертостей пока в разработке.", reply_markup=get_stickers_kb())
 
 # --- ОФЕРЫ ---
-@dp.message(F.text == "Настройки оферов", state="*")
+@dp.message(F.text == "Настройки оферов")
 async def ask_drop(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"Текущий порог: {settings.get('drop_percentage') or 15}%\nВведите новый %:")
@@ -243,7 +243,6 @@ async def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logging.info("🚀 Запуск приложения...")
     
-    # 1. Запускаем веб-сервер для Render, чтобы он не убил бота
     app = web.Application()
     app.router.add_get('/', handle_ping)
     runner = web.AppRunner(app)
@@ -251,13 +250,11 @@ async def main():
     await web.TCPSite(runner, '0.0.0.0', 10000).start()
     logging.info("🌐 Веб-сервер запущен")
     
-    # 2. Сохраняем задачу парсера в переменную, чтобы Python её не убил!
     parser_task = asyncio.create_task(market_parser())
     
-    # 3. Запускаем бота
     logging.info("🤖 Бот подключается к Telegram...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+                                        
