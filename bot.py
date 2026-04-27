@@ -217,21 +217,22 @@ async def market_parser():
                                 # Проверка скидки по проценту с защитой от деления на ноль
                                 if name in base_prices:
                                     base_p = base_prices[name]
-                                    if base_p > 0:  # <--- ИСПРАВЛЕНО ЗДЕСЬ (Защита от деления на ноль)
+                                    if base_p > 0:
                                         drop = (1 - (curr_price / base_p)) * 100
                                         
                                         if drop >= settings['drop_percentage']:
                                             msg = f"🔥 <b>СКИДКА {round(drop, 1)}%!</b>\n📦 {name}\n💰 Цена: {curr_price}$\n📊 База: {base_p}$"
                                             await bot.send_message(ADMIN_ID, msg, parse_mode="HTML")
                         elif r.status == 429:
-                            logging.warning("⚠️ [ПАРСЕР] Лимит запросов к Steam (429). Ждем 30 сек.")
-                            await asyncio.sleep(30)
+                            logging.warning("⚠️ [ПАРСЕР] Стим выдал таймаут (429). Уходим в тень на 5 минут...")
+                            await asyncio.sleep(300)  # Спим 5 минут, чтобы Стим нас "простил"
+                            continue # Пропускаем стандартный sleep в 10 секунд и идем на новый круг
                         else:
                             logging.warning(f"⚠️ [ПАРСЕР] Ошибка Steam: {r.status}")
                 except Exception as e:
                     logging.error(f"❌ [ПАРСЕР] Ошибка сети/прокси: {e}")
 
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)  # Увеличили паузу до 10 секунд
             except Exception as e:
                 logging.error(f"🚨 [ПАРСЕР] Критическая ошибка цикла: {e}")
                 await asyncio.sleep(10)
