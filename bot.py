@@ -214,14 +214,15 @@ async def market_parser():
                                 
                                 if curr_price < settings['min_price']: continue
                                 
-                                # Проверка скидки по проценту
+                                # Проверка скидки по проценту с защитой от деления на ноль
                                 if name in base_prices:
                                     base_p = base_prices[name]
-                                    drop = (1 - (curr_price / base_p)) * 100
-                                    
-                                    if drop >= settings['drop_percentage']:
-                                        msg = f"🔥 <b>СКИДКА {round(drop, 1)}%!</b>\n📦 {name}\n💰 Цена: {curr_price}$\n📊 База: {base_p}$"
-                                        await bot.send_message(ADMIN_ID, msg, parse_mode="HTML")
+                                    if base_p > 0:  # <--- ИСПРАВЛЕНО ЗДЕСЬ (Защита от деления на ноль)
+                                        drop = (1 - (curr_price / base_p)) * 100
+                                        
+                                        if drop >= settings['drop_percentage']:
+                                            msg = f"🔥 <b>СКИДКА {round(drop, 1)}%!</b>\n📦 {name}\n💰 Цена: {curr_price}$\n📊 База: {base_p}$"
+                                            await bot.send_message(ADMIN_ID, msg, parse_mode="HTML")
                         elif r.status == 429:
                             logging.warning("⚠️ [ПАРСЕР] Лимит запросов к Steam (429). Ждем 30 сек.")
                             await asyncio.sleep(30)
@@ -257,4 +258,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                                        
+    
