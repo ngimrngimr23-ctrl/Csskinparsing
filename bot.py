@@ -19,7 +19,7 @@ ADMIN_ID = 368097348  # Твой ID в Телеграм (узнай у @userinfo
 
 # Если есть прокси, раскомментируй строку ниже и вставь свои данные
 # PROXY_URL = 'http://login:password@ip:port'
-PROXY_URL = None 
+PROXY_URL = "http://ngimrngimr23:hpC78oAwq5@151.247.120.145:50100"
 
 SETTINGS_FILE = 'settings.json'
 
