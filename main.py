@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -7,7 +8,7 @@ import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import Message, BufferedInputFile
 
 import storage as db
 from steam_api import fetch_listings, fetch_sticker_price, _jitter
@@ -43,6 +44,7 @@ async def cmd_start(message: Message):
         "/set_min_value <$> — мин. суммарная стоимость наклеек\n"
         "/set_count <N> — сколько листингов проверять за проход\n"
         "/status — текущие настройки\n"
+        "/json — выгрузить список скинов и настройки в JSON\n"
         "/debug — диагностика (Upstash, последняя ошибка)"
     )
 
@@ -142,6 +144,32 @@ async def cmd_set_count(message: Message, command: CommandObject):
     await message.answer(f"Листингов за проход на скин: {value}")
 
 
+@router.message(Command("json"))
+async def cmd_json(message: Message):
+    try:
+        skins = await db.get_skins(http_session)
+        markup = await db.get_markup(http_session)
+        min_value = await db.get_min_value(http_session)
+        count = await db.get_listings_count(http_session)
+        chat_ids = await db.get_chat_ids(http_session)
+    except Exception as e:
+        logger.exception("Ошибка чтения данных для /json: %s", e)
+        await message.answer(f"⚠️ Не удалось прочитать базу: {e}")
+        return
+
+    payload = {
+        "skins": skins,
+        "markup_limit_pct": markup,
+        "min_sticker_value": min_value,
+        "listings_count_per_scan": count,
+        "chat_ids": chat_ids,
+    }
+
+    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    file = BufferedInputFile(data, filename="skins_export.json")
+    await message.answer_document(file, caption=f"Экспорт: {len(skins)} скинов")
+
+
 @router.message(Command("debug"))
 async def cmd_debug(message: Message):
     lines = []
@@ -185,6 +213,7 @@ async def cmd_status(message: Message):
         logger.exception("Ошибка чтения статуса из Upstash: %s", e)
         await message.answer(f"⚠️ Не удалось прочитать базу: {e}")
         return
+
     await message.answer(
         f"Макс. переплата: {markup}%\n"
         f"Мин. стоимость наклеек: ${min_value}\n"
@@ -240,7 +269,6 @@ async def scan_skin(skin_name: str, markup_limit: float, min_value: float, chat_
             continue
 
         markup_pct = (price - bundle_value) / bundle_value * 100
-
         if markup_pct <= markup_limit:
             text = (
                 f"🎯 {skin_name}\n"
@@ -254,7 +282,6 @@ async def scan_skin(skin_name: str, markup_limit: float, min_value: float, chat_
                     await bot.send_message(chat_id, text)
                 except Exception as e:
                     logger.warning("Не удалось отправить в %s: %s", chat_id, e)
-
             await db.mark_sent(http_session, listing_id)
 
 
@@ -277,7 +304,6 @@ async def scan_loop():
                 except Exception as e:
                     logger.exception("Ошибка при скане %s: %s", skin_name, e)
                 await asyncio.sleep(2 + random.random() * 2)  # джиттер между скинами
-
         except Exception as e:
             logger.exception("Ошибка в scan_loop: %s", e)
 
@@ -308,3 +334,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
