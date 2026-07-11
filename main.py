@@ -43,6 +43,7 @@ async def cmd_start(message: Message):
         "/set_markup <%> — макс. переплата сверх стоимости наклеек\n"
         "/set_min_value <$> — мин. суммарная стоимость наклеек\n"
         "/set_count <N> — сколько листингов проверять за проход\n"
+        "/set_proxy <url|off> — задать/выключить прокси для запросов к Steam\n"
         "/status — текущие настройки\n"
         "/json — выгрузить первые 20 лотов из Steam по каждому скину в JSON\n"
         "/debug — диагностика (Upstash, последняя ошибка)"
@@ -144,6 +145,27 @@ async def cmd_set_count(message: Message, command: CommandObject):
     await message.answer(f"Листингов за проход на скин: {value}")
 
 
+@router.message(Command("set_proxy"))
+async def cmd_set_proxy(message: Message, command: CommandObject):
+    if not command.args:
+        await message.answer(
+            "Формат: /set_proxy http://user:pass@ip:port\n"
+            "Чтобы выключить прокси: /set_proxy off"
+        )
+        return
+    value = command.args.strip()
+    try:
+        await db.set_proxy(http_session, value)
+    except Exception as e:
+        logger.exception("Ошибка записи proxy в Upstash: %s", e)
+        await message.answer(f"⚠️ Не удалось сохранить в базу: {e}")
+        return
+    if value.lower() == "off":
+        await message.answer("Прокси выключен, запросы идут напрямую.")
+    else:
+        await message.answer(f"Прокси установлен: {value}")
+
+
 @router.message(Command("json"))
 async def cmd_json(message: Message):
     try:
@@ -159,10 +181,12 @@ async def cmd_json(message: Message):
 
     await message.answer(f"Тяну лоты из Steam для {len(skins)} скин(ов)...")
 
+    proxy = await db.get_proxy(http_session)
+
     result = {}
     for skin_name in skins:
         try:
-            listings = await fetch_listings(http_session, skin_name, count=20)
+            listings = await fetch_listings(http_session, skin_name, count=20, proxy=proxy)
         except Exception as e:
             logger.exception("Ошибка fetch_listings для /json [%s]: %s", skin_name, e)
             result[skin_name] = {"error": str(e)}
@@ -205,6 +229,13 @@ async def cmd_debug(message: Message):
     except Exception as e:
         lines.append(f"Не удалось прочитать last_error: {e}")
 
+    # Текущий прокси
+    try:
+        proxy = await db.get_proxy(http_session)
+        lines.append(f"Прокси: {proxy if proxy else 'выключен (запросы напрямую)'}")
+    except Exception as e:
+        lines.append(f"Не удалось прочитать proxy: {e}")
+
     await message.answer("\n".join(lines))
 
 
@@ -215,6 +246,7 @@ async def cmd_status(message: Message):
         min_value = await db.get_min_value(http_session)
         skins = await db.get_skins(http_session)
         count = await db.get_listings_count(http_session)
+        proxy = await db.get_proxy(http_session)
     except Exception as e:
         logger.exception("Ошибка чтения статуса из Upstash: %s", e)
         await message.answer(f"⚠️ Не удалось прочитать базу: {e}")
@@ -225,18 +257,19 @@ async def cmd_status(message: Message):
         f"Мин. стоимость наклеек: ${min_value}\n"
         f"Листингов на скин: {count}\n"
         f"Скинов в отслеживании: {len(skins)}\n"
-        f"Интервал скана: {SCAN_INTERVAL}с"
+        f"Интервал скана: {SCAN_INTERVAL}с\n"
+        f"Прокси: {proxy if proxy else 'выключен'}"
     )
 
 
 # ---------------- Логика скана ----------------
 
-async def get_sticker_value(sticker_name: str) -> float:
+async def get_sticker_value(sticker_name: str, proxy: str | None = None) -> float:
     cached = await db.get_cached_sticker_price(http_session, sticker_name)
     if cached is not None:
         return cached
     await _jitter(1.0, 1.5)
-    price = await fetch_sticker_price(http_session, sticker_name)
+    price = await fetch_sticker_price(http_session, sticker_name, proxy=proxy)
     if price is None:
         # Не кэшируем провал запроса как валидную цену 0 —
         # иначе цена "залипает" на TTL (4ч) и все лоты с этой наклейкой
@@ -248,9 +281,9 @@ async def get_sticker_value(sticker_name: str) -> float:
     return price
 
 
-async def scan_skin(skin_name: str, markup_limit: float, min_value: float, chat_ids: list, count: int):
+async def scan_skin(skin_name: str, markup_limit: float, min_value: float, chat_ids: list, count: int, proxy: str | None = None):
     try:
-        listings = await fetch_listings(http_session, skin_name, count=count)
+        listings = await fetch_listings(http_session, skin_name, count=count, proxy=proxy)
     except Exception as e:
         err = f"[{skin_name}] Ошибка fetch_listings: {e}"
         logger.exception(err)
@@ -265,7 +298,7 @@ async def scan_skin(skin_name: str, markup_limit: float, min_value: float, chat_
         bundle_value = 0.0
         try:
             for sticker in listing["stickers"]:
-                bundle_value += await get_sticker_value(sticker)
+                bundle_value += await get_sticker_value(sticker, proxy=proxy)
         except Exception as e:
             err = f"[{skin_name}] Ошибка расчёта цены наклеек: {e}"
             logger.exception(err)
@@ -304,6 +337,7 @@ async def scan_loop():
             skins = await db.get_skins(http_session)
             chat_ids = await db.get_chat_ids(http_session)
             count = await db.get_listings_count(http_session)
+            proxy = await db.get_proxy(http_session)
 
             if not skins or not chat_ids:
                 await asyncio.sleep(SCAN_INTERVAL)
@@ -311,7 +345,7 @@ async def scan_loop():
 
             for skin_name in skins:
                 try:
-                    await scan_skin(skin_name, markup_limit, min_value, chat_ids, count)
+                    await scan_skin(skin_name, markup_limit, min_value, chat_ids, count, proxy=proxy)
                 except Exception as e:
                     logger.exception("Ошибка при скане %s: %s", skin_name, e)
                 await asyncio.sleep(2 + random.random() * 2)  # джиттер между скинами
@@ -345,4 +379,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+    
