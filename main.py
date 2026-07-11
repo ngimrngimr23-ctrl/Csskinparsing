@@ -44,7 +44,7 @@ async def cmd_start(message: Message):
         "/set_min_value <$> — мин. суммарная стоимость наклеек\n"
         "/set_count <N> — сколько листингов проверять за проход\n"
         "/status — текущие настройки\n"
-        "/json — выгрузить список скинов и настройки в JSON\n"
+        "/json — выгрузить первые 20 лотов из Steam по каждому скину в JSON\n"
         "/debug — диагностика (Upstash, последняя ошибка)"
     )
 
@@ -148,26 +148,32 @@ async def cmd_set_count(message: Message, command: CommandObject):
 async def cmd_json(message: Message):
     try:
         skins = await db.get_skins(http_session)
-        markup = await db.get_markup(http_session)
-        min_value = await db.get_min_value(http_session)
-        count = await db.get_listings_count(http_session)
-        chat_ids = await db.get_chat_ids(http_session)
     except Exception as e:
-        logger.exception("Ошибка чтения данных для /json: %s", e)
+        logger.exception("Ошибка чтения списка скинов для /json: %s", e)
         await message.answer(f"⚠️ Не удалось прочитать базу: {e}")
         return
 
-    payload = {
-        "skins": skins,
-        "markup_limit_pct": markup,
-        "min_sticker_value": min_value,
-        "listings_count_per_scan": count,
-        "chat_ids": chat_ids,
-    }
+    if not skins:
+        await message.answer("Список скинов пуст. Добавь скин через /add_skin")
+        return
 
-    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    file = BufferedInputFile(data, filename="skins_export.json")
-    await message.answer_document(file, caption=f"Экспорт: {len(skins)} скинов")
+    await message.answer(f"Тяну лоты из Steam для {len(skins)} скин(ов)...")
+
+    result = {}
+    for skin_name in skins:
+        try:
+            listings = await fetch_listings(http_session, skin_name, count=20)
+        except Exception as e:
+            logger.exception("Ошибка fetch_listings для /json [%s]: %s", skin_name, e)
+            result[skin_name] = {"error": str(e)}
+            continue
+        result[skin_name] = listings
+
+    data = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
+    file = BufferedInputFile(data, filename="steam_listings.json")
+    total = sum(len(v) for v in result.values() if isinstance(v, list))
+    await message.answer_document(file, caption=f"Готово: {total} лотов из Steam")
+
 
 
 @router.message(Command("debug"))
@@ -232,7 +238,12 @@ async def get_sticker_value(sticker_name: str) -> float:
     await _jitter(1.0, 1.5)
     price = await fetch_sticker_price(http_session, sticker_name)
     if price is None:
-        price = 0.0
+        # Не кэшируем провал запроса как валидную цену 0 —
+        # иначе цена "залипает" на TTL (4ч) и все лоты с этой наклейкой
+        # будут ложно отброшены по фильтру min_value.
+        # Вместо этого пробрасываем ошибку, чтобы лот пропустили в этом
+        # проходе и попробовали снова в следующем скане.
+        raise RuntimeError(f"Не удалось получить цену наклейки: {sticker_name}")
     await db.cache_sticker_price(http_session, sticker_name, price)
     return price
 
