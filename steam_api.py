@@ -28,30 +28,55 @@ async def _jitter(base=1.5, spread=1.5):
 
 
 async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, count: int = 20):
-    """Возвращает список dict: {listing_id, price_total (float, $), stickers: [names]}"""
+    """Возвращает список dict: {listing_id, price_total (float, $), stickers: [names]}
+
+    Бросает исключение при реальном сбое запроса (бан/рейт-лимит/битый ответ),
+    чтобы вызывающий код (main.py) видел настоящую причину через set_last_error,
+    а не тихо получал пустой список. Пустой список [] возвращается ТОЛЬКО когда
+    запрос прошёл успешно, но среди полученных лотов нет ни одного с наклейками.
+    """
     url = LISTINGS_URL.format(appid=APPID, name=quote(market_hash_name, safe=""))
     params = {"query": "", "start": "0", "count": str(count), "currency": "1", "format": "json"}
+
+    last_status = None
+    last_exc = None
+    data = None
 
     for attempt in range(3):
         try:
             async with session.get(url, params=params, headers=HEADERS, timeout=20) as resp:
+                last_status = resp.status
                 if resp.status == 429 or resp.status == 403:
                     logger.warning("Rate limited on listings (%s), status=%s", market_hash_name, resp.status)
                     await asyncio.sleep(15 + attempt * 15)
                     continue
                 if resp.status != 200:
-                    logger.warning("Bad status %s for %s", resp.status, market_hash_name)
-                    return []
+                    body = await resp.text()
+                    logger.warning("Bad status %s for %s -> %s", resp.status, market_hash_name, body[:300])
+                    raise RuntimeError(f"Steam HTTP {resp.status} для '{market_hash_name}': {body[:200]}")
                 data = await resp.json(content_type=None)
                 break
+        except RuntimeError:
+            raise
         except Exception as e:
+            last_exc = e
             logger.warning("Error fetching listings for %s: %s", market_hash_name, e)
             await asyncio.sleep(10)
     else:
-        return []
+        if last_status in (429, 403):
+            raise RuntimeError(
+                f"Steam заблокировал/зарейтлимитил запросы для '{market_hash_name}' "
+                f"(статус {last_status} после 3 попыток). Похоже IP хостинга забанен Steam."
+            )
+        raise RuntimeError(
+            f"Не удалось получить лоты для '{market_hash_name}' после 3 попыток: {last_exc}"
+        )
 
-    if not data or not data.get("success"):
-        return []
+    if data is None:
+        raise RuntimeError(f"Пустой ответ Steam для '{market_hash_name}'")
+
+    if not data.get("success"):
+        raise RuntimeError(f"Steam вернул success=false для '{market_hash_name}': {str(data)[:200]}")
 
     listinginfo = data.get("listinginfo", {})
     assets = data.get("assets", {})
@@ -126,3 +151,4 @@ async def fetch_sticker_price(session: aiohttp.ClientSession, sticker_name: str)
         return float(cleaned)
     except ValueError:
         return None
+        
