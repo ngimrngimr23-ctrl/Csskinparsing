@@ -38,6 +38,11 @@ async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, 
     """
     url = LISTINGS_URL.format(appid=APPID, name=quote(market_hash_name, safe=""))
     params = {"query": "", "start": "0", "count": str(count), "currency": "1", "format": "json"}
+    request_headers = {
+        **HEADERS,
+        "Referer": url,
+        "X-Requested-With": "XMLHttpRequest",
+    }
 
     last_status = None
     last_exc = None
@@ -45,7 +50,7 @@ async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, 
 
     for attempt in range(3):
         try:
-            async with session.get(url, params=params, headers=HEADERS, timeout=20) as resp:
+            async with session.get(url, params=params, headers=request_headers, timeout=20) as resp:
                 last_status = resp.status
                 if resp.status == 429 or resp.status == 403:
                     logger.warning("Rate limited on listings (%s), status=%s", market_hash_name, resp.status)
