@@ -46,15 +46,15 @@ PAGE_HEADERS = {
 _primed_sessions = set()
 
 
-async def _prime_session(session: aiohttp.ClientSession, page_url: str):
+async def _prime_session(session: aiohttp.ClientSession, page_url: str, proxy: str | None = None):
     """Заходит на саму HTML-страницу листинга (как реальный браузер),
     чтобы Steam выдал cookies сессии (sessionid, steamCountry и т.д.)
     в cookie jar aiohttp-сессии перед AJAX-запросом за JSON."""
-    key = id(session)
+    key = (id(session), proxy)
     if key in _primed_sessions:
         return
     try:
-        async with session.get(page_url, headers=PAGE_HEADERS, timeout=20) as resp:
+        async with session.get(page_url, headers=PAGE_HEADERS, timeout=20, proxy=proxy) as resp:
             await resp.read()
         _primed_sessions.add(key)
     except Exception as e:
@@ -65,7 +65,7 @@ async def _jitter(base=1.5, spread=1.5):
     await asyncio.sleep(base + random.random() * spread)
 
 
-async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, count: int = 20):
+async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, count: int = 20, proxy: str | None = None):
     """Возвращает список dict: {listing_id, price_total (float, $), stickers: [names]}
 
     Бросает исключение при реальном сбое запроса (бан/рейт-лимит/битый ответ),
@@ -81,7 +81,7 @@ async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, 
         "X-Requested-With": "XMLHttpRequest",
     }
 
-    await _prime_session(session, url)
+    await _prime_session(session, url, proxy=proxy)
 
     last_status = None
     last_exc = None
@@ -89,7 +89,7 @@ async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, 
 
     for attempt in range(3):
         try:
-            async with session.get(url, params=params, headers=request_headers, timeout=20) as resp:
+            async with session.get(url, params=params, headers=request_headers, timeout=20, proxy=proxy) as resp:
                 last_status = resp.status
                 if resp.status == 429 or resp.status == 403:
                     logger.warning("Rate limited on listings (%s), status=%s", market_hash_name, resp.status)
@@ -175,14 +175,14 @@ async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, 
     return results
 
 
-async def fetch_sticker_price(session: aiohttp.ClientSession, sticker_name: str):
+async def fetch_sticker_price(session: aiohttp.ClientSession, sticker_name: str, proxy: str | None = None):
     """Возвращает lowest_price наклейки в $ или None"""
     full_name = f"Sticker | {sticker_name}"
     params = {"appid": str(APPID), "currency": "1", "market_hash_name": full_name}
 
     for attempt in range(2):
         try:
-            async with session.get(PRICE_URL, params=params, headers=HEADERS, timeout=15) as resp:
+            async with session.get(PRICE_URL, params=params, headers=HEADERS, timeout=15, proxy=proxy) as resp:
                 if resp.status == 429 or resp.status == 403:
                     await asyncio.sleep(15)
                     continue
@@ -208,4 +208,4 @@ async def fetch_sticker_price(session: aiohttp.ClientSession, sticker_name: str)
         return float(cleaned)
     except ValueError:
         return None
-        
+                    
