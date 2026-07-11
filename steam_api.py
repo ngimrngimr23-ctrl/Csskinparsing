@@ -1,4 +1,5 @@
 import asyncio
+import json
 import random
 import re
 import logging
@@ -50,11 +51,23 @@ async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, 
                     logger.warning("Rate limited on listings (%s), status=%s", market_hash_name, resp.status)
                     await asyncio.sleep(15 + attempt * 15)
                     continue
+                body_text = await resp.text()
                 if resp.status != 200:
-                    body = await resp.text()
-                    logger.warning("Bad status %s for %s -> %s", resp.status, market_hash_name, body[:300])
-                    raise RuntimeError(f"Steam HTTP {resp.status} для '{market_hash_name}': {body[:200]}")
-                data = await resp.json(content_type=None)
+                    logger.warning("Bad status %s for %s -> %s", resp.status, market_hash_name, body_text[:300])
+                    raise RuntimeError(f"Steam HTTP {resp.status} для '{market_hash_name}': {body_text[:200]}")
+                try:
+                    data = json.loads(body_text)
+                except Exception:
+                    preview = body_text[:200].replace("\n", " ").strip()
+                    logger.warning(
+                        "Non-JSON response for %s (status %s): %r", market_hash_name, resp.status, preview
+                    )
+                    last_exc = RuntimeError(
+                        f"Steam вернул не-JSON при статусе 200 (похоже на HTML-стену/капчу/пустой ответ): "
+                        f"{preview or '(пустое тело)'}"
+                    )
+                    await asyncio.sleep(10)
+                    continue
                 break
         except RuntimeError:
             raise
