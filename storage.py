@@ -9,6 +9,7 @@ logger = logging.getLogger("storage")
 
 UPSTASH_URL = os.environ["UPSTASH_REDIS_REST_URL"].rstrip("/")
 UPSTASH_TOKEN = os.environ["UPSTASH_REDIS_REST_TOKEN"]
+
 HEADERS = {"Authorization": f"Bearer {UPSTASH_TOKEN}"}
 
 DEFAULT_MARKUP = 15.0
@@ -88,6 +89,66 @@ async def get_last_error(session):
     return await redis_get(session, "debug:last_error")
 
 
+# ---------- proxies ----------
+
+async def get_proxies(session) -> list:
+    v = await redis_get(session, "config:proxies")
+    return json.loads(v) if v else []
+
+
+async def set_proxies(session, proxies: list):
+    await redis_set(session, "config:proxies", json.dumps(proxies))
+
+
+async def add_proxies(session, new_proxies: list):
+    proxies = await get_proxies(session)
+    added = 0
+    for p in new_proxies:
+        if p not in proxies:
+            proxies.append(p)
+            added += 1
+    await set_proxies(session, proxies)
+    return proxies, added
+
+
+async def remove_proxy_by_index(session, index: int):
+    proxies = await get_proxies(session)
+    if 0 <= index < len(proxies):
+        removed = proxies.pop(index)
+        await set_proxies(session, proxies)
+        return proxies, removed
+    return proxies, None
+
+
+async def get_proxy_index(session) -> int:
+    v = await redis_get(session, "config:proxy_index")
+    return int(v) if v is not None else 0
+
+
+async def set_proxy_index(session, idx: int):
+    await redis_set(session, "config:proxy_index", idx)
+
+
+async def get_current_proxy(session):
+    """Возвращает текущий прокси (строка) или None, если прокси не настроены."""
+    proxies = await get_proxies(session)
+    if not proxies:
+        return None
+    idx = await get_proxy_index(session)
+    return proxies[idx % len(proxies)]
+
+
+async def rotate_proxy(session):
+    """Переключается на следующий прокси по кругу. Возвращает новый прокси или None."""
+    proxies = await get_proxies(session)
+    if not proxies:
+        return None
+    idx = await get_proxy_index(session)
+    idx = (idx + 1) % len(proxies)
+    await set_proxy_index(session, idx)
+    return proxies[idx]
+
+
 async def get_skins(session) -> list:
     v = await redis_get(session, "config:skins")
     return json.loads(v) if v else []
@@ -122,20 +183,6 @@ async def add_chat_id(session, chat_id: int):
     return ids
 
 
-# ---------- proxy config ----------
-
-async def get_proxy(session):
-    """Возвращает URL прокси (например http://user:pass@ip:port) или None, если не задан/выключен."""
-    v = await redis_get(session, "config:proxy")
-    if not v or v == "off":
-        return None
-    return v
-
-
-async def set_proxy(session, url: str):
-    await redis_set(session, "config:proxy", url)
-
-
 # ---------- sticker price cache ----------
 
 async def get_cached_sticker_price(session, sticker_name: str):
@@ -155,4 +202,3 @@ async def already_sent(session, listing_id: str) -> bool:
 
 async def mark_sent(session, listing_id: str, ttl=86400):
     await redis_setex(session, f"sent:{listing_id}", ttl, "1")
-                              
