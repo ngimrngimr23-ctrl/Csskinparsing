@@ -21,7 +21,44 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json,text/javascript,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
 }
+
+PAGE_HEADERS = {
+    "User-Agent": HEADERS["User-Agent"],
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+    "sec-fetch-user": "?1",
+    "upgrade-insecure-requests": "1",
+}
+
+_primed_sessions = set()
+
+
+async def _prime_session(session: aiohttp.ClientSession, page_url: str):
+    """Заходит на саму HTML-страницу листинга (как реальный браузер),
+    чтобы Steam выдал cookies сессии (sessionid, steamCountry и т.д.)
+    в cookie jar aiohttp-сессии перед AJAX-запросом за JSON."""
+    key = id(session)
+    if key in _primed_sessions:
+        return
+    try:
+        async with session.get(page_url, headers=PAGE_HEADERS, timeout=20) as resp:
+            await resp.read()
+        _primed_sessions.add(key)
+    except Exception as e:
+        logger.warning("Не удалось прогреть сессию (%s): %s", page_url, e)
 
 
 async def _jitter(base=1.5, spread=1.5):
@@ -43,6 +80,8 @@ async def fetch_listings(session: aiohttp.ClientSession, market_hash_name: str, 
         "Referer": url,
         "X-Requested-With": "XMLHttpRequest",
     }
+
+    await _prime_session(session, url)
 
     last_status = None
     last_exc = None
