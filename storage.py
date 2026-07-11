@@ -9,7 +9,6 @@ logger = logging.getLogger("storage")
 
 UPSTASH_URL = os.environ["UPSTASH_REDIS_REST_URL"].rstrip("/")
 UPSTASH_TOKEN = os.environ["UPSTASH_REDIS_REST_TOKEN"]
-
 HEADERS = {"Authorization": f"Bearer {UPSTASH_TOKEN}"}
 
 DEFAULT_MARKUP = 15.0
@@ -123,6 +122,20 @@ async def add_chat_id(session, chat_id: int):
     return ids
 
 
+# ---------- proxy config ----------
+
+async def get_proxy(session):
+    """Возвращает URL прокси (например http://user:pass@ip:port) или None, если не задан/выключен."""
+    v = await redis_get(session, "config:proxy")
+    if not v or v == "off":
+        return None
+    return v
+
+
+async def set_proxy(session, url: str):
+    await redis_set(session, "config:proxy", url)
+
+
 # ---------- sticker price cache ----------
 
 async def get_cached_sticker_price(session, sticker_name: str):
@@ -142,3 +155,4 @@ async def already_sent(session, listing_id: str) -> bool:
 
 async def mark_sent(session, listing_id: str, ttl=86400):
     await redis_setex(session, f"sent:{listing_id}", ttl, "1")
+                              
