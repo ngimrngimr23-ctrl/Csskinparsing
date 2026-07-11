@@ -4,6 +4,7 @@ import os
 import random
 
 import aiohttp
+from aiohttp import web
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
@@ -16,6 +17,7 @@ logger = logging.getLogger("main")
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "180"))  # секунд между циклами
+PORT = int(os.environ.get("PORT", "10000"))  # Render прокидывает свой PORT сам
 
 router = Router()
 bot = Bot(token=BOT_TOKEN)
@@ -201,10 +203,22 @@ async def scan_loop():
         await asyncio.sleep(SCAN_INTERVAL)
 
 
+async def start_fake_web_server():
+    """Пустой HTTP-сервер только для того, чтобы Render видел открытый порт на free Web Service."""
+    app = web.Application()
+    app.router.add_get("/", lambda request: web.Response(text="OK"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info("Fake web server started on port %s", PORT)
+
+
 async def main():
     global http_session
     http_session = aiohttp.ClientSession()
     try:
+        await start_fake_web_server()
         asyncio.create_task(scan_loop())
         await dp.start_polling(bot)
     finally:
