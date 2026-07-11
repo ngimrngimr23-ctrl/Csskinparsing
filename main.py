@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -8,7 +9,7 @@ import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import Message, BufferedInputFile
 
 import storage as db
 from steam_api import fetch_listings, fetch_sticker_price, test_proxy, _jitter
@@ -54,6 +55,7 @@ async def cmd_start(message: Message):
         "/clear_proxies — очистить список прокси\n"
         "/check_proxies — проверить все прокси\n"
         "/status — текущие настройки\n"
+        "/json — выгрузить лоты из Steam по каждому скину в JSON-файл\n"
         "/debug — диагностика (Upstash, последняя ошибка)"
     )
 
@@ -218,6 +220,40 @@ async def cmd_set_count(message: Message, command: CommandObject):
         return
     await db.set_listings_count(http_session, value)
     await message.answer(f"Листингов за проход на скин: {value}")
+
+
+@router.message(Command("json"))
+async def cmd_json(message: Message):
+    try:
+        skins = await db.get_skins(http_session)
+        count = await db.get_listings_count(http_session)
+    except Exception as e:
+        logger.exception("Ошибка чтения списка скинов для /json: %s", e)
+        await message.answer(f"⚠️ Не удалось прочитать базу: {e}")
+        return
+
+    if not skins:
+        await message.answer("Список скинов пуст. Добавь скин через /add_skin")
+        return
+
+    await message.answer(f"Тяну лоты из Steam для {len(skins)} скин(ов)...")
+
+    result = {}
+    for skin_name in skins:
+        try:
+            listings = await call_with_proxy_rotation(
+                lambda proxy, s=skin_name: fetch_listings(http_session, s, count=count, proxy=proxy)
+            )
+        except Exception as e:
+            logger.exception("Ошибка fetch_listings для /json [%s]: %s", skin_name, e)
+            result[skin_name] = {"error": str(e)}
+            continue
+        result[skin_name] = listings
+
+    data = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
+    file = BufferedInputFile(data, filename="steam_listings.json")
+    total = sum(len(v) for v in result.values() if isinstance(v, list))
+    await message.answer_document(file, caption=f"Готово: {total} лотов из Steam")
 
 
 @router.message(Command("debug"))
