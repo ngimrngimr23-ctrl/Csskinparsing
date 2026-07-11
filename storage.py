@@ -20,7 +20,18 @@ async def _cmd(session: aiohttp.ClientSession, *parts):
     path = "/".join(quote(str(p), safe="") for p in parts)
     url = f"{UPSTASH_URL}/{path}"
     async with session.get(url, headers=HEADERS, timeout=15) as resp:
-        data = await resp.json()
+        body = await resp.text()
+        if resp.status != 200:
+            logger.error("Upstash HTTP %s for %s -> %s", resp.status, path, body)
+            raise RuntimeError(f"Upstash error {resp.status}: {body}")
+        try:
+            data = await resp.json(content_type=None)
+        except Exception:
+            logger.error("Upstash non-JSON response for %s -> %s", path, body)
+            raise RuntimeError(f"Upstash bad response: {body}")
+        if "result" not in data:
+            logger.error("Upstash response missing 'result' for %s -> %s", path, body)
+            raise RuntimeError(f"Upstash unexpected response: {body}")
         return data.get("result")
 
 
@@ -68,6 +79,14 @@ async def get_listings_count(session) -> int:
 
 async def set_listings_count(session, value: int):
     await redis_set(session, "config:listings_count", value)
+
+
+async def set_last_error(session, text: str):
+    await redis_set(session, "debug:last_error", text)
+
+
+async def get_last_error(session):
+    return await redis_get(session, "debug:last_error")
 
 
 async def get_skins(session) -> list:
